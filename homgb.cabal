@@ -15,8 +15,12 @@ library
                      , Homgb.Render
                      , Homgb.Config
                      , Homgb.Helpers
+                     , Homgb.GL.Texture
                      , Homgb.Notifications.Data
                      , Homgb.Notifications.Daemon
+                     , Homgb.Tray
+                     , Homgb.Tray.Icons
+                     , Homgb.Tray.Render
   build-depends:       base >= 4.7 && < 5
                      , bytestring
                      , sdl2 >= 2.5
@@ -37,6 +41,8 @@ library
                      , status-notifier-item >= 0.3.2.16 && < 0.4
                      , yaml
                      , aeson
+                     , JuicyPixels >= 3.3 && < 3.4
+                     , vector
                      , tagsoup
                      , split
                      , haskell-gettext

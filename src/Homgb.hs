@@ -21,13 +21,15 @@ import Homgb.Config (Config, getConfig, defaultConfigText)
 import Homgb.Notifications.Daemon (startNotificationDaemon)
 import Homgb.Render
 import Homgb.State
+import Homgb.Tray (startTray)
 
 run :: IO ()
 run = do
   initializeAll
   config <- loadConfig
   tState <- startNotificationDaemon config
-  app <- initialAppState tState
+  tray <- startTray
+  app <- initialAppState tState tray
   runManaged $ do
     window <- managed $ bracket createMainWindow destroyWindow
     glContext <- managed $ bracket (glCreateContext window) glDeleteContext

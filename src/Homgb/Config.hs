@@ -131,6 +131,11 @@ data Config = Config
   , configButtonHeight :: Int
   , configButtonMargin :: Int
   , configButtons :: [ButtonConfig]
+
+  -- tray
+  , configTrayIconSize :: Int
+  , configTraySpacing :: Int
+  , configTrayPosition :: String
   }
 
 (.:.) :: FromJSON a => Y.Parser (Maybe Y.Object) -> Text.Text -> Y.Parser (Maybe a)
@@ -257,6 +262,12 @@ instance FromJSON Config where
     <*> thirdLevel o "notification-center" "buttons" "buttons-margin" 2
   -- configButtons
     <*> thirdLevel o "notification-center" "buttons" "actions" []
+  -- configTrayIconSize
+    <*> secondLevel o "tray" "icon-size" 22
+  -- configTraySpacing
+    <*> secondLevel o "tray" "spacing" 4
+  -- configTrayPosition
+    <*> secondLevel o "tray" "position" "top-right"
   parseJSON _ = fail "Expected Object for Config value"
 
 data ButtonConfig = Button
@@ -322,4 +333,8 @@ defaultConfigText = Text.pack $ unlines
   , "  buttons-height: 60"
   , "  buttons-margin: 2"
   , "  actions: []"
+  , "tray:"
+  , "  icon-size: 22"
+  , "  spacing: 4"
+  , "  position: top-right"
   ]

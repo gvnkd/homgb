@@ -12,6 +12,14 @@
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
 SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
 
+## Milestone status
+
+- M1 (notification daemon): done, committed as `160aee7`.
+- M2 (SNI tray): core done (watcher+host via `status-notifier-item` package,
+  tray bar with icons/click/tooltips). Open: DBusMenu context menus (task 17).
+  Design: `design_docs/milestone_2.md`.
+- M3+: notification center panel, keyboard layouts, multi-monitor.
+
 ## Architecture
 
 One process:
@@ -125,8 +133,23 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   `dict:string:variant:urgency:byte:2` fails with "Malformed dictionary"
   — use busctl.
 - Keep homgb alive across tool calls:
-  `setsid ~/bin/env-wrap dbus-run-session -- sh -c '... homgb & busctl monitor &; echo export DBUS...=/tmp/bus.env; sleep 300' < /dev/null > /dev/null 2>&1 &`,
-  then `source /tmp/bus.env` in later commands.
+  `setsid -f ~/bin/env-wrap dbus-run-session -- sh -c '... homgb & ...; sleep 300' < /dev/null > /dev/null 2>&1`
+  (plain `setsid ... &` intermittently never starts the child; `-f` forks
+  reliably). When the wrapped command's sleep expires, dbus-run-session
+  TEARS DOWN the private bus — homgb then logs fatal ClientError per
+  connection ("Unexpected end of input while parsing message header").
+  That error means THE BUS DIED, not a parse bug.
+- Tray testing: DON'T bother with private buses — kded on the real session
+  bus already runs `org.kde.StatusNotifierWatcher`; blueman/steam register
+  there and homgb's host attaches without name conflicts (only
+  Notifications is queue-blocked by Plasma). Screenshot-verified.
+- `steam_tray_mono` is a *white monochrome* icon — renders as a white blob
+  at 22px; not a bug. SNI pixmaps from the host arrive in HOST byte order
+  (B,G,R,A on LE — `Homgb.GL.Texture.bgraToRgba`); M1 notification
+  `image-data` hints arrive in NETWORK order (A,R,G,B — `argbToRgba`).
+- dear-imgui 2.5 has `setItemTooltip :: Text -> IO ()` (tooltip for the
+  last item) — used for tray hover text. There is NO mouse-wheel binding:
+  tray Scroll support needs SDL wheel events (TODO).
 - Timeout semantics (deadd `startTimeoutThread`): 0 = never, >0 = ms,
   <0 = `popup.default-timeout` ms. Expiry is checked in the render frame
   loop (`isExpired` in Render.hs), no threads.

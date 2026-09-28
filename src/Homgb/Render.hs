@@ -3,7 +3,7 @@
 module Homgb.Render (renderFrame) where
 
 import Control.Concurrent.STM.TVar
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (atomically, modifyTVar')
 import Control.Monad (when, unless, forM_)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
@@ -14,29 +14,30 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Array (allocaArray, pokeArray, peekArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import Graphics.GL hiding (glBindTexture)
-import qualified Graphics.GL as GL (glBindTexture)
-import SDL hiding (Normal, glBindTexture)
+import Graphics.GL (GLuint)
+import SDL hiding (Normal)
 
 import System.IO (hPutStrLn, hFlush, stderr)
 import System.Environment (lookupEnv)
 
 import DearImGui hiding (image, begin)
 import qualified DearImGui.Raw as Raw
-  (image, sameLine, spacing, begin, pushStyleColor, setNextWindowPos
+  (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
   , setNextWindowSize)
 
 import Homgb.Config (Config(..))
+import Homgb.GL.Texture
 import Homgb.Notifications.Daemon (NotifyState(..), closeNotiById)
 import Homgb.Notifications.Data
 import Homgb.State
+import Homgb.Tray (trayTextures)
+import Homgb.Tray.Render (renderTray)
 
 renderFrame :: AppState -> Window -> IO ()
 renderFrame app window = do
-  V2 winW _ <- get (windowSize window)
+  V2 winW winH <- get (windowSize window)
   let tState = appNotify app
   state <- readTVarIO tState
   let config = notiConfig state
@@ -55,6 +56,8 @@ renderFrame app window = do
   heights <- readTVarIO (appHeights app)
   let startY = fromIntegral (configDistanceTop config)
   renderPopups app tState config (fromIntegral winW) startY heights notis
+  renderTray (appTray app) (trayTextures (appTray app)) config
+    (fromIntegral winW) (fromIntegral winH)
 
 -- | deadd's timeout semantics (NotificationPopup.startTimeoutThread):
 --   0 = never expires, >0 = that many milliseconds, <0 = configured default.
@@ -131,14 +134,15 @@ renderPopup app tState config winW top heightGuess noti = do
             case Map.lookup (notiId noti) cache of
               Just tex -> return (Just tex)
               Nothing -> do
-                tex <- uploadTexture argb
+                tex <- uploadRgba (rawImgRgba argb)
                 atomically $ modifyTVar' (appTextures app)
                   $ Map.insert (notiId noti) tex
                 return (Just tex)
           _ -> return Nothing
         forM_ mTex $ \tex -> do
           Raw.spacing
-          drawImage tex (fromIntegral (notiImgSize noti))
+          let imgPx = fromIntegral (notiImgSize noti)
+          drawImage tex imgPx imgPx
 
         renderActions tState noti
 
@@ -184,7 +188,7 @@ syncTextures app notis =
         case Map.lookup (notiId noti) cache of
           Just _ -> return ()
           Nothing -> do
-            tex <- uploadTexture argb
+            tex <- uploadRgba (rawImgRgba argb)
             atomically $ modifyTVar' (appTextures app)
               $ Map.insert (notiId noti) tex
       _ -> return ()
@@ -196,9 +200,7 @@ pruneCache app liveIds = do
   let deadIds = Map.keys cache \\ liveIds
       dead = map (cache Map.!) deadIds
   unless (null dead) $ do
-    allocaArray (length dead) $ \ptr -> do
-      pokeArray ptr dead
-      glDeleteTextures (fromIntegral (length dead)) ptr
+    deleteTextures dead
     atomically $ modifyTVar' (appTextures app)
       $ \m -> foldl' (flip Map.delete) m deadIds
   atomically $ modifyTVar' (appHeights app)
@@ -210,46 +212,10 @@ isRgba8 (imgW, imgH, rowstride, _, bits, channels, dat) =
     && fromIntegral rowstride >= imgW * 4
     && BS.length dat >= fromIntegral (rowstride * (imgH - 1) + imgW * 4)
 
-uploadTexture :: (Int32, Int32, Int32, Bool, Int32, Int32, BS.ByteString) -> IO GLuint
-uploadTexture (imgW, imgH, rowstride, _, _, _, dat) = do
-  [tex] <- allocaArray 1 $ \ptr -> do
-    glGenTextures 1 ptr
-    peekArray 1 ptr
-  GL.glBindTexture GL_TEXTURE_2D tex
-  glTexParameteri GL_TEXTURE_2D GL_TEXTURE_MIN_FILTER
-    (fromIntegral (GL_LINEAR :: GLenum) :: GLint)
-  glTexParameteri GL_TEXTURE_2D GL_TEXTURE_MAG_FILTER
-    (fromIntegral (GL_LINEAR :: GLenum) :: GLint)
-  glPixelStorei GL_UNPACK_ROW_LENGTH (fromIntegral rowstride `div` 4)
-  BS.useAsCString (argbToRgba dat) $ \ptr ->
-    glTexImage2D GL_TEXTURE_2D 0 (fromIntegral (GL_RGBA :: GLenum) :: GLint)
-      (fromIntegral imgW) (fromIntegral imgH) 0 GL_RGBA GL_UNSIGNED_BYTE (castPtr ptr)
-  glPixelStorei GL_UNPACK_ROW_LENGTH 0
-  return tex
-
--- DBus hint images are ARGB32 in network byte order: A R G B per pixel.
--- GL wants R G B A.
-argbToRgba :: BS.ByteString -> BS.ByteString
-argbToRgba = BS.pack . go . BS.unpack
-  where
-    go (a:r:g:b:rest) = r:g:b:a : go rest
-    go _ = []
-
-drawImage :: GLuint -> Float -> IO ()
-drawImage tex sizePx = do
-  let ref = ImTextureRef nullPtr (fromIntegral tex)
-      imgSize = ImVec2 sizePx sizePx
-      uv0 = ImVec2 0 0
-      uv1 = ImVec2 1 1
-  alloca $ \refPtr ->
-    alloca $ \sizePtr ->
-      alloca $ \uv0Ptr ->
-        alloca $ \uv1Ptr -> do
-          poke refPtr ref
-          poke sizePtr imgSize
-          poke uv0Ptr uv0
-          poke uv1Ptr uv1
-          Raw.image refPtr sizePtr uv0Ptr uv1Ptr
+-- | Convert a DBus raw image hint (ARGB32, network byte order) to RGBA.
+rawImgRgba :: (Int32, Int32, Int32, Bool, Int32, Int32, BS.ByteString) -> SizedRgba
+rawImgRgba (imgW, imgH, _, _, _, _, dat) =
+  SizedRgba (fromIntegral imgW) (fromIntegral imgH) (argbToRgba dat)
 
 urgencyBg :: Urgency -> ImVec4
 urgencyBg Normal = ImVec4 0.13 0.14 0.15 1.0
