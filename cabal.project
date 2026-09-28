@@ -1,0 +1,4 @@
+packages: .
+
+package dear-imgui
+  flags: +sdl +opengl3 -vulkan -sdl-renderer -opengl2
