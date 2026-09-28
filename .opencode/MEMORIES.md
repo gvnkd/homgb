@@ -1,3 +1,12 @@
+# Taiga
+
+- Project: HomgB (id 15, slug `homgb`), milestone "Milestone 1" (id 182).
+- `taiga-cli` quirks: init needs full `http://localhost:8000/api/v1` URL;
+  token goes to `~/.taiga_token` (not project `.taiga/`); `task list` is
+  NOT filtered by active project (shows other projects' tasks); PATCH
+  needs current `version` field. For milestone/task changes use curl with
+  `~/.taiga_token` (see session history 2026-09-28).
+
 # homgb
 
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
@@ -79,6 +88,52 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   Building `X11` from a git checkout additionally needs autoreconf — use the
   Hackage tarball.
 - `dear-imgui` compiles C++ via inline-c-cpp; needs `gcc` in PATH (in flake).
+- cabal v2 rebuild checks ignore `touch` (content-hash based); edit the file
+  to force recompilation when iterating on warnings.
+- In zsh, `echo ===` fails (`=cmd` expansion) — quote it.
+- deadd's `getTime` uses `System.Locale.Current`; we use
+  `defaultTimeLocale "%H:%M"` (Data.Time).
+- dear-imgui 2.5 has no high-level `image`/flagged `begin`; use
+  `DearImGui.Raw` (ptr-based: `Raw.begin label Nothing (Just flags)`,
+  `Raw.image`, `Raw.pushStyleColor`) with `withImVec2`/`withImVec4` poke
+  helpers. `ImVec2/ImVec4/ImTextureRef` are re-exported from `DearImGui`
+  and are `Storable`. No `Semigroup ImGuiWindowFlags` — combine with
+  bitwise `.|.` on the underlying `CInt`.
+- GL constants in the `gl` package are polymorphic (`Num a`); annotate
+  (`fromIntegral (GL_LINEAR :: GLenum) :: GLint`) to silence defaulting.
+- `ImTextureRef nullPtr texId` works as an OpenGL texture ref (texID =
+  GLuint as u64); no picom on Sergey's XWayland — transparent bg untested.
+- `dbus` package `connectSession` per call; name ownership:
+  `requestName` with `nameReplaceExisting` only steals the name if the
+  current owner allowed replacement — Plasma does NOT. Test with
+  `dbus-run-session -- ...` (private bus); `notify-send` is not installed,
+  use `dbus-send`. `busctl --user monitor org.freedesktop.Notifications`
+  watches signals.
+- deadd semantics kept: `NotificationClosed` is only emitted when
+  `notification.dbus.send-noti-closed: true` (config), NOT by default.
+- Self-testing recipe (Sergey's X11/xmonad session, Display :1):
+  xdotool, imagemagick, flameshot, xprop, xwininfo, libnotify
+  (notify-send), dbus (dbus-run-session/dbus-monitor) are all in the
+  flake devShell now. Screenshots: `DISPLAY=:1 flameshot full -p /tmp/`,
+  then `magick <png> -crop WxH+X+Y +repage -resize 150% /tmp/crop.png` and
+  view the file. NEVER `pkill -f` with a pattern that appears in the
+  wrapper shell's own command line (it kills the shell) — use `pkill -x`.
+  busctl Notify syntax: dicts need an entry COUNT —
+  `busctl --user call org.freedesktop.Notifications /org/freedesktop/Notifications
+  org.freedesktop.Notifications Notify susssasa{sv}i app 0 x title body 0 1 urgency y 2 0`
+  (array `0` = empty, dict `1 urgency y 2` = one entry). dbus-send
+  `dict:string:variant:urgency:byte:2` fails with "Malformed dictionary"
+  — use busctl.
+- Keep homgb alive across tool calls:
+  `setsid ~/bin/env-wrap dbus-run-session -- sh -c '... homgb & busctl monitor &; echo export DBUS...=/tmp/bus.env; sleep 300' < /dev/null > /dev/null 2>&1 &`,
+  then `source /tmp/bus.env` in later commands.
+- Timeout semantics (deadd `startTimeoutThread`): 0 = never, >0 = ms,
+  <0 = `popup.default-timeout` ms. Expiry is checked in the render frame
+  loop (`isExpired` in Render.hs), no threads.
+- `parseHtmlEntities` was ported without regex-tdfa (hand-rolled scanner);
+  Helpers only carries pure functions (no i18n/ConfigFile).
+- deadd's `Notification` gained `notiCreatedAt :: UTCTime` (needed for
+  frame-loop expiry); `notiClassName` and `rawImgToPixBuf` dropped.
 
 ## Roadmap
 

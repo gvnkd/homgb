@@ -36,6 +36,15 @@
               xorg.setxkbmap
               xorg.xkbutils
 
+              # notification daemon testing (see .opencode/MEMORIES.md)
+              xdotool
+              imagemagick
+              flameshot
+              xorg.xprop
+              xorg.xwininfo
+              libnotify
+              dbus
+
               git
             ];
 

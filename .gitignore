@@ -3,3 +3,5 @@ dist-newstyle/
 result
 .direnv/
 imgui.ini
+.taiga/
+imgui.ini

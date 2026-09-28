@@ -2,11 +2,11 @@
 
 module Homgb (run) where
 
-import Control.Concurrent.STM.TVar
 import Control.Exception (bracket, bracket_)
 import Control.Monad (unless)
 import Control.Monad.IO.Class
 import Control.Monad.Managed
+import qualified Data.Text.IO as T
 import DearImGui
 import DearImGui.OpenGL3
 import DearImGui.SDL
@@ -14,20 +14,35 @@ import DearImGui.SDL.OpenGL
 import Graphics.GL
 import SDL
 
+import System.Directory (doesFileExist, getXdgDirectory, XdgDirectory(..))
+import System.FilePath ((</>))
+
+import Homgb.Config (Config, getConfig, defaultConfigText)
+import Homgb.Notifications.Daemon (startNotificationDaemon)
 import Homgb.Render
 import Homgb.State
 
 run :: IO ()
 run = do
   initializeAll
-  state <- newTVarIO initialState
+  config <- loadConfig
+  tState <- startNotificationDaemon config
+  app <- initialAppState tState
   runManaged $ do
     window <- managed $ bracket createMainWindow destroyWindow
     glContext <- managed $ bracket (glCreateContext window) glDeleteContext
     _ <- managed $ bracket createContext destroyContext
     managed_ $ bracket_ (sdl2InitForOpenGL window glContext) sdl2Shutdown
     managed_ $ bracket_ openGL3Init openGL3Shutdown
-    liftIO $ mainLoop state window
+    liftIO $ mainLoop app window
+
+loadConfig :: IO Config
+loadConfig = do
+  path <- (</> "config.yml") <$> getXdgDirectory XdgConfig "homgb"
+  exists <- doesFileExist path
+  if exists
+    then getConfig =<< T.readFile path
+    else getConfig defaultConfigText
 
 createMainWindow :: IO Window
 createMainWindow =
@@ -39,20 +54,20 @@ createMainWindow =
     , windowGraphicsContext = OpenGLContext defaultOpenGL
     }
 
-mainLoop :: TVar AppState -> Window -> IO ()
-mainLoop state window = unlessQuit $ do
+mainLoop :: AppState -> Window -> IO ()
+mainLoop app window = unlessQuit $ do
   openGL3NewFrame
   sdl2NewFrame
   newFrame
 
-  renderFrame state
+  renderFrame app window
 
   glClear GL_COLOR_BUFFER_BIT
   render
   openGL3RenderDrawData =<< getDrawData
 
   glSwapWindow window
-  mainLoop state window
+  mainLoop app window
   where
     unlessQuit action = do
       shouldQuit <- gotQuitEvent
@@ -65,3 +80,4 @@ mainLoop state window = unlessQuit $ do
         Just ev -> (isQuit ev ||) <$> gotQuitEvent
 
     isQuit ev = eventPayload ev == QuitEvent
+ 

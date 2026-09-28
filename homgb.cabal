@@ -13,7 +13,12 @@ library
   exposed-modules:     Homgb
                      , Homgb.State
                      , Homgb.Render
+                     , Homgb.Config
+                     , Homgb.Helpers
+                     , Homgb.Notifications.Data
+                     , Homgb.Notifications.Daemon
   build-depends:       base >= 4.7 && < 5
+                     , bytestring
                      , sdl2 >= 2.5
                      , dear-imgui >= 2.5
                      , gl
