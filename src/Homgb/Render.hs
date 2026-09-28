@@ -3,7 +3,7 @@
 module Homgb.Render (renderFrame) where
 
 import Control.Concurrent.STM.TVar
-import Control.Concurrent.STM (atomically, modifyTVar')
+import Control.Concurrent.STM (atomically)
 import Control.Monad (when, unless, forM_)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
@@ -16,7 +16,6 @@ import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import Graphics.GL (GLuint)
 import SDL hiding (Normal)
 
 import System.IO (hPutStrLn, hFlush, stderr)
@@ -25,7 +24,7 @@ import System.Environment (lookupEnv)
 import DearImGui hiding (image, begin)
 import qualified DearImGui.Raw as Raw
   (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
-  , setNextWindowSize)
+  , setNextWindowSize, showMetricsWindow)
 
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
@@ -58,6 +57,15 @@ renderFrame app window = do
   renderPopups app tState config (fromIntegral winW) startY heights notis
   renderTray (appTray app) (trayTextures (appTray app)) config
     (fromIntegral winW) (fromIntegral winH)
+  debug <- lookupEnv "HOMGB_DEBUG"
+  case debug of
+    Just _ -> hPutStrLn stderr
+      $ "win size=(" ++ show winW ++ "," ++ show winH ++ ")"
+    Nothing -> return ()
+  metrics <- lookupEnv "HOMGB_METRICS"
+  case metrics of
+    Just _ -> Raw.showMetricsWindow
+    Nothing -> return ()
 
 -- | deadd's timeout semantics (NotificationPopup.startTimeoutThread):
 --   0 = never expires, >0 = that many milliseconds, <0 = configured default.
@@ -249,3 +257,4 @@ fallbackHeight :: Config -> Float
 fallbackHeight config =
   fromIntegral (configImgSize config)
     + fromIntegral (configImgMarginTop config + configImgMarginBottom config)
+ 

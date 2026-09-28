@@ -14,9 +14,8 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
 
 ## Milestone status
 
-- M1 (notification daemon): done, committed as `160aee7`.
-- M2 (SNI tray): core done (watcher+host via `status-notifier-item` package,
-  tray bar with icons/click/tooltips). Open: DBusMenu context menus (task 17).
+- M1 (notification daemon): done, `160aee7`.
+- M2 (SNI tray + dbusmenu): done, core `2a6e958`; menus in follow-up commit.
   Design: `design_docs/milestone_2.md`.
 - M3+: notification center panel, keyboard layouts, multi-monitor.
 
@@ -150,6 +149,29 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - dear-imgui 2.5 has `setItemTooltip :: Text -> IO ()` (tooltip for the
   last item) — used for tray hover text. There is NO mouse-wheel binding:
   tray Scroll support needs SDL wheel events (TODO).
+- **`withWindowOpen`/`with` take NO window flags** — a `let flags = ...`
+  next to them is silently unused (GHC warns, heed it!). The window then
+  gets a title bar + a tiny remembered size, and clips all content: looks
+  exactly like "widgets render but only 1-2 clipped rows appear". ALWAYS
+  use `Raw.begin label Nothing (Just flags)` + `end` for decorated-less
+  windows (see Tray.Render/Menu.Render). This cost hours: the "mystery
+  ▼+glyph window" following the tray was the menu's own title-bar/collapse
+  arrow sitting on top of a clipped menu.
+- ImGui auto-opens a collapsed `Debug##Default` (Debug Log) window on
+  usage errors; it then persists its position in `imgui.ini` (gitignored —
+  DELETE it when window geometry acts weird). `HOMGB_METRICS=1` env shows
+  the metrics window (`Raw.showMetricsWindow`); its Windows/DrawLists
+  sections enumerate every ImGui window with vertex counts — the fastest
+  way to find who renders what.
+- dbusmenu: `Event`/`GetLayout`/`AboutToShow` must be sent to the item's
+  **Menu object path** (from the `Menu` property, e.g.
+  `/org/ayatana/NotificationItem/steam/Menu`), NOT the item path. Root
+  layout node (id 0) is virtual — steam marks even it
+  `children-display: submenu`; always render `lnChildren` of the root.
+  GetLayout reply = `(u revision, (ia{sv}av))`; parseable via
+  `fromVariant :: Variant -> Maybe (Int32, Map Text Variant, [Variant])`.
+- Default ImGui font has NO Cyrillic glyphs (steam's Russian menu labels
+  render as ?????). Load a font with `GetGlyphRangesCyrillic` when needed.
 - Timeout semantics (deadd `startTimeoutThread`): 0 = never, >0 = ms,
   <0 = `popup.default-timeout` ms. Expiry is checked in the render frame
   loop (`isExpired` in Render.hs), no threads.

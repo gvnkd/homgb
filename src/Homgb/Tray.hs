@@ -8,7 +8,7 @@ module Homgb.Tray
   ) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.STM (atomically, modifyTVar')
+import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
@@ -17,6 +17,8 @@ import System.IO (hPutStrLn, stderr)
 import DBus.Client (Client, connectSession)
 import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
+
+import Homgb.Tray.Menu.Render (Menus, newMenus)
 
 -- | One tray entry. tiVersion bumps whenever the host reports an
 -- icon-affecting change so the renderer re-uploads the GL texture.
@@ -36,15 +38,17 @@ data TrayEnv = TrayEnv
   , trayClient :: Client
   , trayTextures :: TVar (Map.Map String (Int, Maybe GLuint))
     -- ^ icon textures: item bus name -> (version, texture)
+  , trayMenus :: Menus
   }
 
 startTray :: IO TrayEnv
 startTray = do
   tState <- newTVarIO $ TrayState [] 0
   textures <- newTVarIO Map.empty
+  menus <- newMenus
   client <- connectSession
   _ <- forkIO $ runHost tState client
-  return $ TrayEnv tState client textures
+  return $ TrayEnv tState client textures menus
 
 runHost :: TVar TrayState -> Client -> IO ()
 runHost tState client = do
@@ -82,3 +86,4 @@ updateHandler tState updateType info =
       s { trayItems = map (\i -> if itemServiceName (tiInfo i) == name
                                    then f i else i) items
         , trayVersion = trayVersion s + 1 }
+ 

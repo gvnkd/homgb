@@ -51,7 +51,7 @@ createMainWindow =
   createWindow "homgb" defaultWindow
     { windowBorder = False
     , windowResizable = False
-    , windowInitialSize = V2 400 300
+    , windowInitialSize = V2 500 700
     , windowPosition = Absolute (P (V2 80 60))
     , windowGraphicsContext = OpenGLContext defaultOpenGL
     }

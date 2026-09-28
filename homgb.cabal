@@ -21,6 +21,9 @@ library
                      , Homgb.Tray
                      , Homgb.Tray.Icons
                      , Homgb.Tray.Render
+                     , Homgb.Tray.Menu.Client
+                     , Homgb.Tray.Menu.Tree
+                     , Homgb.Tray.Menu.Render
   build-depends:       base >= 4.7 && < 5
                      , bytestring
                      , sdl2 >= 2.5
@@ -35,6 +38,7 @@ library
                      , directory
                      , filepath
                      , process
+                     , unix
                      , time
                      , dbus >= 1.2 && < 2
                      , X11

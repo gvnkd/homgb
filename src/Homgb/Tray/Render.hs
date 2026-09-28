@@ -3,7 +3,7 @@
 module Homgb.Tray.Render (renderTray) where
 
 import Control.Concurrent.STM.TVar
-import Control.Concurrent.STM (atomically, modifyTVar')
+import Control.Concurrent.STM (atomically)
 import Control.Monad (when, forM_)
 import Data.Bits ((.|.))
 import qualified Data.ByteString as BS
@@ -15,9 +15,10 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (poke)
 import Graphics.GL (GLuint)
-import SDL hiding (Normal)
 
-import DBus.Client (Client)
+import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
+
 import DBus.Internal.Types (BusName(..))
 import qualified StatusNotifier.Item.Client as I
 import StatusNotifier.Host.Service (ItemInfo(..))
@@ -28,8 +29,9 @@ import qualified DearImGui.Raw as Raw
 
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
-import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), trayTextures)
+import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..))
 import Homgb.Tray.Icons (iconRgba)
+import Homgb.Tray.Menu.Render (openItemMenu, renderMenus)
 
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
@@ -37,14 +39,21 @@ type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 renderTray :: TrayEnv -> TrayTextures -> Config -> Float -> Float -> IO ()
 renderTray env textures config winW winH = do
   state <- readTVarIO (trayState env)
+  dbg0 <- lookupEnv "HOMGB_DEBUG"
+  case dbg0 of
+    Just _ -> hPutStrLn stderr $ "tray items: "
+      ++ show [ (t, coerce (itemServiceName (tiInfo i)) :: String)
+              | i <- trayItems state
+              , let t = iconTitle (tiInfo i) ]
+    Nothing -> return ()
   let items = [ ti | ti <- trayItems state
                , tiStatus ti /= Just "Passive" ]
-      size = fromIntegral (configTrayIconSize config)
-      spacing = fromIntegral (configTraySpacing config)
-      btn = size + 6
+      iconSize = fromIntegral (configTrayIconSize config)
+      traySpacing = fromIntegral (configTraySpacing config)
+      btn = iconSize + 6
       pos = trayPos (configTrayPosition config) winW winH
       pivot = trayPivot (configTrayPosition config)
-      flags = foldl1 combineFlags
+      trayFlags = foldl1 combineFlags
         [ ImGuiWindowFlags_NoTitleBar
         , ImGuiWindowFlags_NoResize
         , ImGuiWindowFlags_NoMove
@@ -58,16 +67,17 @@ renderTray env textures config winW winH = do
     withImVec2 pivot $ \pivotPtr ->
       Raw.setNextWindowPos posPtr ImGuiCond_Always (Just pivotPtr)
   beginVisible <- BS.useAsCString "homgb-tray"
-    $ \label -> Raw.begin label Nothing (Just flags)
-  when beginVisible $
+    $ \label -> Raw.begin label Nothing (Just trayFlags)
+  when beginVisible $ do
     forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
       when (idx > 0) Raw.sameLine
-      renderItem env textures config size btn spacing idx item
+      renderItem env textures config iconSize btn traySpacing idx item winW winH
+    renderMenus (trayClient env) (trayMenus env)
   end
 
 renderItem :: TrayEnv -> TrayTextures -> Config -> Float -> Float -> Float
-           -> Int -> TrayItem -> IO ()
-renderItem env textures config size btn spacing idx item = do
+           -> Int -> TrayItem -> Float -> Float -> IO ()
+renderItem env textures config _iconSize btn _traySpacing _idx item winW winH = do
   let info = tiInfo item
       name = itemServiceName info
       path = itemServicePath info
@@ -102,9 +112,18 @@ renderItem env textures config size btn spacing idx item = do
   when clicked $
     void' $ I.activate (trayClient env) name path clickX clickY
 
+  -- Right-click toggles the item's dbusmenu window (when it has one).
+  rightClicked <- isItemClicked ImGuiMouseButton_Right
+  when rightClicked $ do
+    debug <- lookupEnv "HOMGB_DEBUG"
+    case debug of
+      Just _ -> hPutStrLn stderr $ "tray right-click: " ++ show (coerce name :: String)
+        ++ " menu=" ++ show (menuPath info)
+      Nothing -> return ()
+    openItemMenu (trayClient env) (trayMenus env) info (ImVec2 winW winH)
+
   setItemTooltip (T.pack (tooltipText info))
   where
-    _unused = (config, spacing, idx)
     void' action = do
       _ <- action
       return ()
@@ -126,13 +145,13 @@ tiStatus = itemStatus . tiInfo
 
 -- | Upload (or fetch cached) tray icon texture for an item.
 trayTexture :: TrayTextures -> Int -> TrayItem -> IO (Maybe GLuint)
-trayTexture textures size item = do
+trayTexture textures iconSz item = do
   cache <- readTVarIO textures
   let key = show (coerce (itemServiceName (tiInfo item)) :: String)
   case Map.lookup key cache of
     Just (v, tex) | v == tiVersion item -> return tex
     _ -> do
-      mRgba <- iconRgba size (tiInfo item)
+      mRgba <- iconRgba iconSz (tiInfo item)
       mTex <- traverse uploadRgba mRgba
       -- drop the stale texture after the new one is up
       case Map.lookup key cache of
@@ -161,3 +180,4 @@ withImVec2 v f = alloca $ \p -> poke p v >> f p
 combineFlags :: ImGuiWindowFlags -> ImGuiWindowFlags -> ImGuiWindowFlags
 combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
   ImGuiWindowFlags (a .|. b)
+ 

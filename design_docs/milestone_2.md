@@ -124,8 +124,17 @@ data Host = Host { itemInfoMap :: IO (Map BusName ItemInfo)
 - [ ] `src/Homgb/Tray/Render.hs`: tray bar ImGui window, icon buttons,
       tooltips, activate/contextMenu/scroll calls
 - [ ] Wire `startTray` into `Homgb.run`
-- [ ] Vendor DBusMenu client (TH + XML), Reconcile, layout accessors as
+- [x] Vendor DBusMenu client (TH + XML), Reconcile, layout accessors as
       `Homgb/Tray/Menu/*`; render context menus (stretch)
+
+Implemented without TH: `Homgb.Tray.Menu.Client` hand-rolls the six
+`com.canonical.dbusmenu` calls on the `dbus` package (GetLayout,
+AboutToShow, Event + LayoutUpdated match). `Tree` ports the layout
+parsing; `Render` draws the menu as a plain anchored window (ImGui popup
+stack proved unreliable) with `selectable` rows (`menuItem`/`beginMenu`
+behave oddly outside menu bars). Submenu headers render as indented
+labels. Verified with steam: full menu renders, click emits
+`Event(id, "clicked")` on the menu path.
 - [ ] `tray.*` config section (icon-size, position, spacing)
 - [ ] Verify: `nm-applet`/`blueman`/`keepassxc` icon appears; click
       activates; scroll forwards; menu renders (stretch)
