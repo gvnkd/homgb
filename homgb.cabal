@@ -16,8 +16,9 @@ library
                      , Homgb.Config
                      , Homgb.Helpers
                       , Homgb.GL.Texture
-                      , Homgb.GL.Visual
                       , Homgb.WMProps
+                      , Homgb.SDL3
+                      , Homgb.ImGui.SDL3
                      , Homgb.Notifications.Data
                      , Homgb.Notifications.Daemon
                      , Homgb.Tray
@@ -29,12 +30,12 @@ library
                       , Homgb.Keyboard
                       , Homgb.Keyboard.Xcb
   build-depends:       base >= 4.7 && < 5
-                     , bytestring
-                     , sdl2 >= 2.5
-                     , dear-imgui >= 2.5
-                     , gl
-                     , managed
-                     , linear
+                      , bytestring
+                      , sdl3-bindgen-sys >= 0.0.0.3 && < 0.0.1
+                      , dear-imgui >= 2.5
+                      , gl
+                      , managed
+                      , linear
                      , stm
                      , containers
                      , text
@@ -56,7 +57,11 @@ library
                      , haskell-gettext
                      , lens
   c-sources:           cbits/homgb-xkb.c
-  pkgconfig-depends:   xcb, xcb-xkb, gl, x11
+  cxx-sources:         cbits/homgb-imgui-sdl3.cpp
+                      , vendor/imgui/backends/imgui_impl_sdl3.cpp
+  cxx-options:         -std=c++11 -DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"
+  include-dirs:        vendor/imgui, vendor/imgui/backends
+  pkgconfig-depends:   xcb, xcb-xkb, x11, sdl3
   default-language:    Haskell2010
   ghc-options:         -Wall -Wcompat -Wredundant-constraints
 

@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <GL/glx.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <xcb/xcb.h>
@@ -87,60 +86,6 @@ void homgb_ensure_sticky(Display *dpy, Window win) {
                     PropModeReplace, (unsigned char *)&allDesktops, 1);
     XFlush(dpy);
   }
-}
-
-/* Picks a depth-32 ARGB visual usable for a transparent GL window, or
- * -1 if none. Preferred: an FB config with 8-bit alpha whose X visual
- * is truly depth 32 (Mesa without ARGB GLX returns a depth-24 visual
- * here, which compositors treat as opaque). Fallback: any GLX-capable
- * depth-32 TrueColor visual (SDL creates the context on the window's
- * visual directly). Display comes from Xlib (Graphics.X11). */
-long homgb_glx_alpha_visual(void *display_, int screen) {
-  Display *dpy = (Display *)display_;
-  int attribs[] = {
-    GLX_RENDER_TYPE, GLX_RGBA_BIT,
-    GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-    GLX_RED_SIZE, 8,
-    GLX_GREEN_SIZE, 8,
-    GLX_BLUE_SIZE, 8,
-    GLX_ALPHA_SIZE, 8,
-    GLX_DOUBLEBUFFER, True,
-    None
-  };
-  int n = 0;
-  GLXFBConfig *fb = glXChooseFBConfig(dpy, screen, attribs, &n);
-  if (fb && n > 0) {
-    XVisualInfo *vi = glXGetVisualFromFBConfig(dpy, fb[0]);
-    if (vi) {
-      long id = (vi->depth == 32) ? (long)vi->visualid : -1;
-      XFree(vi);
-      XFree(fb);
-      if (id >= 0) return id;
-    } else {
-      XFree(fb);
-    }
-  }
-
-  XVisualInfo templ;
-  memset(&templ, 0, sizeof(templ));
-  templ.screen = screen;
-  templ.depth = 32;
-  templ.class = TrueColor;
-  XVisualInfo *vis = XGetVisualInfo(dpy,
-    VisualScreenMask | VisualDepthMask | VisualClassMask, &templ, &n);
-  if (!vis) return -1;
-  long id = -1;
-  for (int i = 0; i < n; i++) {
-    int use_gl = 0, alpha = 0;
-    if (glXGetConfig(dpy, &vis[i], GLX_USE_GL, &use_gl) == 0 && use_gl
-        && glXGetConfig(dpy, &vis[i], GLX_ALPHA_SIZE, &alpha) == 0
-        && alpha > 0) {
-      id = (long)vis[i].visualid;
-      break;
-    }
-  }
-  XFree(vis);
-  return id;
 }
 
 void *homgb_xcb_connect(void) {

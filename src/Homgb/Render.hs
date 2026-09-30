@@ -13,10 +13,10 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
+import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import SDL hiding (Normal)
 
 import System.IO (hPutStrLn, hFlush, stderr)
 import System.Environment (lookupEnv)
@@ -30,13 +30,15 @@ import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Notifications.Daemon (NotifyState(..), closeNotiById)
 import Homgb.Notifications.Data
+import Homgb.SDL3 (Window)
+import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Tray (trayTextures)
 import Homgb.Tray.Render (renderTray)
 
 renderFrame :: AppState -> Window -> IO ()
 renderFrame app window = do
-  V2 winW winH <- get (windowSize window)
+  V2 winW winH <- SDL3.windowSize window
   let tState = appNotify app
   state <- readTVarIO tState
   let config = notiConfig state

@@ -11,7 +11,16 @@ Read `.opencode/MEMORIES.md`, `design_docs/milestone_1.md` ..
 ## Revised plan (2026-09-30, after investigating SDL3 bindings and
 ## imgui backend capabilities)
 
-### Step 1 — platform swap: sdl2 -> sdl3-bindgen-sys (lithon)
+### Step 1 — platform swap: sdl2 -> sdl3-bindgen-sys (lithon) — DONE
+
+Landed: `Homgb.SDL3` (window/GL/events over SDL3.Sys), `Homgb.ImGui.SDL3`
+(vendored imgui_impl_sdl3.cpp 1.92.8 + extern "C" shim, see
+vendor/README.md), dear-imgui `-sdl` flag, GLX hack removed,
+WMProps tags by SDL_PROP_WINDOW_X11_WINDOWID pre-map. Verified on
+:1: DOCK+sticky window (depth 32), tray, popup notification, dbusmenu
+open/close-outside, layout indicator click + hotkey.
+
+### Step 2 — multi-window surfaces (NEXT)
 
 Why: nixpkgs "SDL2" is sdl2-compat (SDL3 in a trenchcoat) that burned
 us twice (visualid hint read once at init; alpha FBConfig lying about

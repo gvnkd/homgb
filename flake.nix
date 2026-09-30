@@ -22,7 +22,27 @@
               pkg-config
               gcc
 
-              SDL2
+              sdl3
+              # sdl3.pc Requires.private (pkg-config at configure time)
+              alsa-lib
+              libjack2
+              pipewire
+              libpulseaudio
+              xorg.libXcursor
+              xorg.libXi
+              xorg.libXfixes
+              xorg.libXtst
+              libdrm
+              mesa
+              libgbm
+              libxkbcommon
+              wayland
+              wayland-protocols
+              libdecor
+              libusb1
+              libdecor
+              libusb1
+
               libGL
               glew
               zlib
@@ -51,7 +71,7 @@
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              pkgs.SDL2
+              pkgs.sdl3
               pkgs.libGL
               pkgs.glew
               pkgs.zlib

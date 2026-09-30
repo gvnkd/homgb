@@ -120,23 +120,33 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   `Centered | Wherever | Absolute (P (V2 x y))`; `P`/`V2` come from
   `SDL.Vect` (re-exported by `SDL`). No `SDL_WINDOW_ALWAYS_ON_TOP` flag.
 - Transparency requires a running compositor (picom/compton/
-  fastcompmgr). Implemented: depth-32 window + `glClearColor 0 0 0 0` +
-  transparent `ImGuiCol_WindowBg` on the tray window (popups/menus keep
-  opaque bgs).
-- **nixpkgs SDL2 is sdl2-compat (SDL3)**: `SDL_GL_ALPHA_SIZE` alone
-  still yields a depth-24 (opaque) window, and
-  `SDL_VIDEO_X11_WINDOW_VISUALID` is read ONCE at SDL video init —
-  setting it after `initializeAll` is silently ignored. homgb therefore
-  queries GLX BEFORE initializeAll (`Homgb.GL.Visual.glxAlphaVisual`,
-  C shim `homgb_glx_alpha_visual`) and sets the hint.
-- Mesa gotcha: `glXChooseFBConfig` with GLX_ALPHA_SIZE 8 returns a
-  FB config whose XVisualInfo is depth 24 on this driver — compositors
-  treat that as opaque. Must check `vi->depth == 32`; fallback scans
-  depth-32 TrueColor visuals for GLX capability (`glXGetConfig
-  GLX_USE_GL/GL_ALPHA_SIZE`). Visual ids are driver-specific; never
-  hardcode (0x7a works here, 0x23 BadMatches).
-- Without a compositor an ARGB window renders black — same as before,
-  acceptable.
+  fastcompmgr). M4 step 1: real SDL3 via `sdl3-bindgen-sys` (lithon,
+  Hackage 0.0.x, pin minor) gives `SDL_WINDOW_TRANSPARENT` — native
+  depth-32 windows, the entire GLX visualid hack is DELETED (was:
+  nixpkgs SDL2 = sdl2-compat; SDL_VIDEO_X11_WINDOW_VISUALID read once
+  at video init; Mesa glXChooseFBConfig lies about depth). Keep
+  `glClearColor 0 0 0 0` + transparent `ImGuiCol_WindowBg` on the tray.
+- sdl3-bindgen-sys: flake needs sdl3 + its full Requires.private chain
+  (alsa jack pipewire pulseaudio libXcursor/Xi/Xfixes/Xtst libdrm
+  mesa libgbm libxkbcommon wayland wayland-protocols libdecor libusb1)
+  or pkg-config configure fails. Generated from SDL 3.4.16 headers —
+  matches nixpkgs sdl3 exactly. Idioms: `alloca @SDL_Event`, peek type
+  via `peek (castPtr ev :: Ptr SDL_EventType)`, pattern synonyms
+  SDL_EVENT_*, opaque types under `Ptr` (SDL_GLContext is a Storable
+  newtype — `SDL_GLContext nullPtr` for null checks), Bool results,
+  `getError`+ConstPtr for errors. Window position is NOT a
+  createWindow arg in SDL3 — WM places it (xmonad tiled homgb to
+  1670,730; fine for now).
+- dear-imgui's `DearImGui.SDL` binds the sdl2 package — unusable on
+  SDL3. homgb compiles upstream imgui_impl_sdl3.cpp (vendored
+  vendor/imgui, imgui 1.92.8 = dear-imgui 2.5's core) behind an
+  extern "C" shim (cbits/homgb-imgui-sdl3.cpp), linking imgui core
+  symbols from libHSdear-imgui. MUST compile with dear-imgui's defines:
+  `-DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"`. ImGui_ImplSDL3_
+  NewFrame only sets io (DisplaySize/DeltaTime/mouse) — still need
+  dear-imgui's `newFrame` (ImGui::NewFrame) after it.
+- dear-imgui cabal.project flags now `-sdl +opengl3` (drops the sdl2
+  dep entirely; flake keeps no SDL2/sdl2-compat).
 - WM properties (Homgb.WMProps, C shim): homgb's single SDL window is
   tagged _NET_WM_WINDOW_TYPE=DOCK + SKIP_TASKBAR/PAGER +
   _NET_WM_DESKTOP=0xFFFFFFFF, found by _NET_WM_PID (SDL sets it).
