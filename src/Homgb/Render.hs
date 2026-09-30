@@ -55,7 +55,7 @@ renderFrame app window = do
   heights <- readTVarIO (appHeights app)
   let startY = fromIntegral (configDistanceTop config)
   renderPopups app tState config (fromIntegral winW) startY heights notis
-  renderTray (appTray app) (trayTextures (appTray app)) config
+  renderTray (appTray app) (trayTextures (appTray app)) config (appKeyboard app)
     (fromIntegral winW) (fromIntegral winH)
   debug <- lookupEnv "HOMGB_DEBUG"
   case debug of

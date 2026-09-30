@@ -17,7 +17,9 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
 - M1 (notification daemon): done, `160aee7`.
 - M2 (SNI tray + dbusmenu): done, core `2a6e958`; menus in follow-up commit.
   Design: `design_docs/milestone_2.md`.
-- M3+: notification center panel, keyboard layouts, multi-monitor.
+- M3 (keyboard layout manager): done. XCB group lock instead of
+  setxkbmap (Sergey's call). Design: `design_docs/milestone_3.md`.
+- M4+: notification center panel, multi-monitor.
 
 ## Architecture
 
@@ -68,9 +70,38 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 
 ## Keyboard layouts
 
-- Switch: shell out to `setxkbmap` (what `xkb-switch` does internally).
-- Indicator: poll `setxkbmap -query` on tray refresh.
-- No `xkbcommon` Haskell binding needed for now.
+- M3 implemented via XCB, NOT setxkbmap: `cbits/homgb-xkb.c` +
+  `Homgb.Keyboard.Xcb` FFI. Group lock = `xcb_xkb_latch_lock_state`
+  (lockGroup=1); current group = `xcb_xkb_get_state`; layout rotation
+  list = root `_XKB_RULES_NAMES` property (3rd string, comma-separated).
+- **libxcb in nixpkgs ships libxcb-xkb** (header `xcb/xkb.h`,
+  `xcb-xkb.pc`) — no extra package; but flake.nix needs BOTH
+  `xorg.libxcb` and `xorg.libXdmcp` (`xcb.pc` Requires.private xdmcp,
+  pkg-config configure fails otherwise). Cabal: `pkgconfig-depends:
+  xcb, xcb-xkb` + `c-sources`.
+- xcb 1.17: `xcb_xkb_get_state_reply_t` field is `group` (NOT
+  `groupState` — that name is from Xlib docs).
+- An xcb connection is NOT thread-safe for concurrent requests:
+  homgb opens one per thread (switch thread vs render-poll thread).
+- XKB group lock PERSISTS across `setxkbmap` reloads; indicator staleness
+  is handled by polling `get_state` from the render loop, rate-limited
+  to 1/s (`pollGroup`).
+- `XGrabKey` on an already-grabbed combo (e.g. a second homgb instance)
+  = BadAccess printed by Xlib's default error handler, then process
+  exit. Check `pgrep homgb` before testing.
+- Grab matching: server masks LockMask/Mod2Mask, one grab per exact
+  combo suffices. Hotkey parse: `stringToKeysym` for the key name,
+  `keysymToKeycode` for the grab.
+
+## Threaded RTS (CRITICAL)
+
+- exe MUST be built with `-threaded` (homgb.cabal ghc-options). Without
+  it any blocking C call freezes the ENTIRE runtime. Symptom: process
+  alive, log file ends mid-line, wedge point moves between runs (GC /
+  preemption timer fires at random spots). M1/M2 only survived because
+  dbus/SDL used non-blocking fds; M3's XNextEvent + xcb reply-waits
+  exposed it. `binary +RTS -N2 -RTS` errors with "requires -threaded"
+  if you need to check a build.
 
 ## Known pitfalls
 
@@ -88,9 +119,24 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - `sdl2` (2.5.6.1) `windowPosition :: WindowPosition` is
   `Centered | Wherever | Absolute (P (V2 x y))`; `P`/`V2` come from
   `SDL.Vect` (re-exported by `SDL`). No `SDL_WINDOW_ALWAYS_ON_TOP` flag.
-- Transparency requires a running compositor (picom/compton).
-- SDL2's OpenGL alpha on X11 needs verification — if the window comes out
-  opaque, request an 8-bit alpha GL attribute before context creation.
+- Transparency requires a running compositor (picom/compton/
+  fastcompmgr). Implemented: depth-32 window + `glClearColor 0 0 0 0` +
+  transparent `ImGuiCol_WindowBg` on the tray window (popups/menus keep
+  opaque bgs).
+- **nixpkgs SDL2 is sdl2-compat (SDL3)**: `SDL_GL_ALPHA_SIZE` alone
+  still yields a depth-24 (opaque) window, and
+  `SDL_VIDEO_X11_WINDOW_VISUALID` is read ONCE at SDL video init —
+  setting it after `initializeAll` is silently ignored. homgb therefore
+  queries GLX BEFORE initializeAll (`Homgb.GL.Visual.glxAlphaVisual`,
+  C shim `homgb_glx_alpha_visual`) and sets the hint.
+- Mesa gotcha: `glXChooseFBConfig` with GLX_ALPHA_SIZE 8 returns a
+  FB config whose XVisualInfo is depth 24 on this driver — compositors
+  treat that as opaque. Must check `vi->depth == 32`; fallback scans
+  depth-32 TrueColor visuals for GLX capability (`glXGetConfig
+  GLX_USE_GL/GL_ALPHA_SIZE`). Visual ids are driver-specific; never
+  hardcode (0x7a works here, 0x23 BadMatches).
+- Without a compositor an ARGB window renders black — same as before,
+  acceptable.
 - The Haskell `X11` package builds against system libs; they are in the flake.
   Building `X11` from a git checkout additionally needs autoreconf — use the
   Hackage tarball.
@@ -172,6 +218,33 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   `fromVariant :: Variant -> Maybe (Int32, Map Text Variant, [Variant])`.
 - Default ImGui font has NO Cyrillic glyphs (steam's Russian menu labels
   render as ?????). Load a font with `GetGlyphRangesCyrillic` when needed.
+- **`Raw.imageButton` arg order is (label, texRef, size, uv0, uv1,
+  bg_col, tint_col)** — passing (tint, bg) swapped makes tint alpha 0
+  with a white bg → every tray icon renders as a SOLID WHITE SQUARE.
+  Cost a debugging session; the bg is invisible so it looks like an
+  upload/decode bug (decode was fine — always verify source PNG pixels
+  first). `drawImage`/`Raw.image` have no such params.
+- SNI icon NAMES can contain dots ("dev.lizardbyte.app.Sunshine-tray") —
+  don't use `takeExtension` to detect file paths; check for known image
+  extensions / leading slashes instead. Sunshine's icon is SVG-only:
+  `themeRgba` falls back to `<name>.svg` rasterized through the first
+  available of rsvg-convert/magick/convert (spawn per icon-version
+  change, cached after). `process` pkg has no System.Process.ByteString
+  here — use createProcess + BS.hGetContents.
+- steam ships only `steam_tray_mono.png` (grey glyph on WHITE opaque
+  bg) via IconThemePath — the white square is the actual icon. Plasma
+  recolors it; we render as-is (glyph visible after the tint/bg fix).
+- Tray menus: only one open at a time (`hideOthers` in
+  Tray/Menu/Render). Close-on-outside-click polls button edges via
+  XQueryPointer on the tray's OWN X display (`trayDisplay` in Tray.hs) —
+  SDL's getMouseButtons only sees clicks delivered to homgb's window.
+  ImGui MousePos is -FLT_MAX when the pointer leaves the SDL window;
+  that counts as outside (foreign click closes the menu). The opening
+  press is ignored via msOpenedAt 0.25s guard. Menus render after the
+  tray window and the tray has NoBringToFrontOnFocus — otherwise the
+  right-click focuses the tray and ImGui draws it OVER the menu.
+  xdotool `click` is faster than a frame — use mousedown/sleep/mouseup
+  to test click handling, or polling misses the press entirely.
 - Timeout semantics (deadd `startTimeoutThread`): 0 = never, >0 = ms,
   <0 = `popup.default-timeout` ms. Expiry is checked in the render frame
   loop (`isExpired` in Render.hs), no threads.

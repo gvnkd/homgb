@@ -32,6 +32,8 @@
               xorg.libXinerama
               xorg.libXScrnSaver
               xorg.libXext
+              xorg.libxcb
+              xorg.libXdmcp
 
               xorg.setxkbmap
               xorg.xkbutils
@@ -54,6 +56,7 @@
               pkgs.glew
               pkgs.zlib
               pkgs.xorg.libX11
+              pkgs.xorg.libxcb
             ];
           };
         });

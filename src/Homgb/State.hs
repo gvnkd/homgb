@@ -6,6 +6,7 @@ import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 
+import Homgb.Keyboard (KeyboardEnv)
 import Homgb.Notifications.Daemon (NotifyState)
 import Homgb.Tray (TrayEnv)
 
@@ -16,10 +17,11 @@ data AppState = AppState
   , appHeights :: TVar (Map.Map Int Float)
     -- ^ Last measured popup heights, keyed by notiId (stacking layout)
   , appTray :: TrayEnv
+  , appKeyboard :: Maybe KeyboardEnv
   }
 
-initialAppState :: TVar NotifyState -> TrayEnv -> IO AppState
-initialAppState tState tray = do
+initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv -> IO AppState
+initialAppState tState tray kb = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   return AppState
@@ -27,4 +29,5 @@ initialAppState tState tray = do
     , appTextures = textures
     , appHeights = heights
     , appTray = tray
+    , appKeyboard = kb
     }

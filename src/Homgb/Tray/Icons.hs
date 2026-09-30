@@ -1,19 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Homgb.Tray.Icons (iconRgba) where
+module Homgb.Tray.Icons (iconRgba, iconRgbaSrc) where
 
-import Control.Exception (catch, IOException)
+import Control.Exception (catch, IOException, try)
 import Control.Monad (filterM, forM)
+import Data.Char (toLower)
 import Data.Int (Int32)
-import Data.List (sortOn, isPrefixOf)
+import Data.List (sortOn, isPrefixOf, isSuffixOf)
 import Data.Maybe (listToMaybe, catMaybes, fromMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.Vector.Storable as VS
 import qualified Data.ByteString.Internal as BSI
-import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory)
+import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory, findExecutable)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeExtension, splitPath)
+import System.IO (hClose)
+import System.Process (createProcess, proc, std_out, StdStream(..), waitForProcess)
 
 import Codec.Picture
 import Codec.Picture.Types (DynamicImage(..), imageWidth, imageHeight
@@ -28,10 +31,17 @@ import Homgb.GL.Texture
 -- inside iconThemePath, freedesktop theme PNG lookup. SVG is a known
 -- limitation (no GTK-free SVG renderer) — returns Nothing.
 iconRgba :: Int -> ItemInfo -> IO (Maybe SizedRgba)
-iconRgba size info =
-      pixmapRgba size info
-  `orElseIO` pathRgba size (iconName info) (iconThemePath info)
-  `orElseIO` themeRgba size (iconName info)
+iconRgba size info = fmap snd <$> iconRgbaSrc size info
+
+-- | Like 'iconRgba' but also reports which resolution source produced
+-- the pixels ("pixmap", "path", "theme") for debugging.
+iconRgbaSrc :: Int -> ItemInfo -> IO (Maybe (String, SizedRgba))
+iconRgbaSrc size info =
+      tag "pixmap" (pixmapRgba size info)
+  `orElseIO` tag "path" (pathRgba size (iconName info) (iconThemePath info))
+  `orElseIO` tag "theme" (themeRgba size (iconName info))
+  where
+    tag s m = fmap ((,) s) <$> m
 
 orElseIO :: IO (Maybe a) -> IO (Maybe a) -> IO (Maybe a)
 orElseIO a b = do
@@ -72,18 +82,60 @@ pathRgba _ name mThemePath
 
 -- | Minimal freedesktop icon-theme lookup: walk the standard icon base
 -- directories (bounded depth) for @<name>.png@, preferring the size
--- closest to the requested one. No index.theme parsing (inheritance,
--- scalable/SVG) — good enough for M2.
+-- closest to the requested one; falls back to @<name>.svg@ rasterized
+-- through the first available of rsvg-convert/magick/convert. No
+-- index.theme parsing (inheritance) — good enough for M2.
 themeRgba :: Int -> String -> IO (Maybe SizedRgba)
 themeRgba size name
-  | null name || not (null (takeExtension name)) = return Nothing
+  | null name || looksLikePath name = return Nothing
   | otherwise = do
       bases <- iconBaseDirs
       found <- fmap catMaybes $ forM bases $ \base ->
         findIconIn size base (name ++ ".png")
       case sortOn snd found of
         ((path,_):_) -> loadPngFile path
-        [] -> return Nothing
+        [] -> do
+          foundSvg <- fmap catMaybes $ forM bases $ \base ->
+            findIconIn size base (name ++ ".svg")
+          case sortOn snd foundSvg of
+            ((path,_):_) -> rasterizeSvg size path
+            [] -> return Nothing
+
+-- Icon names may contain dots (e.g. "dev.lizardbyte.app.Sunshine-tray")
+-- without being file paths; only skip names that look like files.
+looksLikePath :: String -> Bool
+looksLikePath name =
+  let ext = map toLower (takeExtension name)
+  in any (`isPrefixOf` name) ["/", "./", "../"]
+       || ext `elem` [".png", ".svg", ".jpg", ".jpeg", ".gif", ".bmp", ".xpm"]
+
+-- | Rasterize an SVG icon to @size x size@ PNG bytes using the first
+-- available external tool, then decode as PNG.
+rasterizeSvg :: Int -> FilePath -> IO (Maybe SizedRgba)
+rasterizeSvg size path = do
+  tools <- catMaybes <$> mapM findExecutable ["rsvg-convert", "magick", "convert"]
+  case tools of
+    [] -> return Nothing
+    (tool:_) -> do
+      out <- tryIO $ do
+        (_, Just hout, _, ph) <-
+          createProcess (proc tool (argsFor tool)) { std_out = CreatePipe }
+        bytes <- BS.hGetContents hout
+        hClose hout
+        _ <- waitForProcess ph
+        return bytes
+      return $ case out of
+        Right bytes -> decodePngRgba bytes
+        Left (_ :: IOException) -> Nothing
+  where
+    px = show size
+    argsFor t
+      | t `endsWith` "rsvg-convert" = ["-w", px, "-h", px, path]
+      | t `endsWith` "magick" = [path, "-background", "none", "-resize", px ++ "x" ++ px, "png:-"]
+      | otherwise = [path, "-background", "none", "-resize", px ++ "x" ++ px, "png:-"]
+
+endsWith :: String -> String -> Bool
+endsWith s suffix = suffix `isSuffixOf` s
 
 iconBaseDirs :: IO [FilePath]
 iconBaseDirs = do
@@ -134,6 +186,9 @@ findIconIn size base fileName = go 0 base
 
 catchIO :: IO a -> (IOException -> IO a) -> IO a
 catchIO = catch
+
+tryIO :: IO a -> IO (Either IOException a)
+tryIO = try
 
 loadPngFile :: FilePath -> IO (Maybe SizedRgba)
 loadPngFile path = do

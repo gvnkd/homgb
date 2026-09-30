@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Homgb (run) where
 
 import Control.Exception (bracket, bracket_)
-import Control.Monad (unless)
+import Control.Monad (forM_, unless)
 import Control.Monad.IO.Class
 import Control.Monad.Managed
 import qualified Data.Text.IO as T
@@ -15,9 +16,14 @@ import Graphics.GL
 import SDL
 
 import System.Directory (doesFileExist, getXdgDirectory, XdgDirectory(..))
+import System.Environment (setEnv, unsetEnv)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
+import Numeric (showHex)
 
 import Homgb.Config (Config, getConfig, defaultConfigText)
+import Homgb.GL.Visual (glxAlphaVisual)
+import Homgb.Keyboard (startKeyboard)
 import Homgb.Notifications.Daemon (startNotificationDaemon)
 import Homgb.Render
 import Homgb.State
@@ -25,13 +31,23 @@ import Homgb.Tray (startTray)
 
 run :: IO ()
 run = do
+  -- SDL (via sdl2-compat) reads SDL_VIDEO_X11_WINDOW_VISUALID once at
+  -- video init, so the ARGB visual must be chosen BEFORE initializeAll.
+  -- SDL picks an alpha-capable GLX FB config (glColorPrecision) but
+  -- creates the X window with a 24-bit visual unless the hint forces
+  -- the config's own visual — query GLX for it.
+  mVisual <- glxAlphaVisual
+  forM_ mVisual $ \v -> do
+    setEnv "SDL_VIDEO_X11_WINDOW_VISUALID" ("0x" ++ showHex v "")
+    hPutStrLn stderr $ "homgb: using ARGB visual 0x" ++ showHex v ""
   initializeAll
   config <- loadConfig
   tState <- startNotificationDaemon config
   tray <- startTray
-  app <- initialAppState tState tray
+  kb <- startKeyboard config
+  app <- initialAppState tState tray kb
+  window <- createMainWindow
   runManaged $ do
-    window <- managed $ bracket createMainWindow destroyWindow
     glContext <- managed $ bracket (glCreateContext window) glDeleteContext
     _ <- managed $ bracket createContext destroyContext
     managed_ $ bracket_ (sdl2InitForOpenGL window glContext) sdl2Shutdown
@@ -54,6 +70,9 @@ createMainWindow =
     , windowInitialSize = V2 500 700
     , windowPosition = Absolute (P (V2 80 60))
     , windowGraphicsContext = OpenGLContext defaultOpenGL
+        { glColorPrecision = V4 8 8 8 8
+          -- 8-bit alpha so a compositor can see through the window
+        }
     }
 
 mainLoop :: AppState -> Window -> IO ()
@@ -64,6 +83,7 @@ mainLoop app window = unlessQuit $ do
 
   renderFrame app window
 
+  glClearColor 0 0 0 0
   glClear GL_COLOR_BUFFER_BIT
   render
   openGL3RenderDrawData =<< getDrawData

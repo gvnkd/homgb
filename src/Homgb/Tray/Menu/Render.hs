@@ -11,9 +11,8 @@ module Homgb.Tray.Menu.Render
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-import Control.Monad (when, forM_, void)
+import Control.Monad (when, unless, forM_, void)
 import Data.Bits ((.|.))
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -25,6 +24,12 @@ import Foreign.Storable (poke)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 import System.Posix.Process (getProcessID)
+
+import Data.Bits ((.&.))
+import Graphics.X11.Types (button1Mask, button3Mask)
+import Graphics.X11.Xlib (Display)
+import Graphics.X11.Xlib.Display (defaultRootWindow)
+import Graphics.X11.Xlib.Misc (queryPointer)
 
 import DBus.Client (Client)
 import DBus.Internal.Types (BusName(..), ObjectPath)
@@ -47,6 +52,7 @@ data MenuState = MenuState
   , msWatched :: Bool
   , msVisible :: Bool
   , msPos :: ImVec2
+  , msOpenedAt :: POSIXTime
   }
 
 -- | Keyed by the item's bus name string; keeps the ItemInfo around so
@@ -70,6 +76,7 @@ openItemMenu client menus info winSize =
     Just path -> do
       let key = menuKey info
       ImVec2 mx my <- Raw.getMousePos
+      now <- getPOSIXTime
       let ImVec2 wx wy = winSize
           pos = ImVec2 (min mx (wx - 180)) (min my (wy - 60))
       nowVisible <- atomically $ do
@@ -77,22 +84,40 @@ openItemMenu client menus info winSize =
         case Map.lookup key m of
           Just (_, _, st) -> do
             let v = not (msVisible st)
+                others = if v then hideOthers key m else m
             writeTVar menus (Map.insert key (info, path, st
-              { msVisible = v, msPos = pos }) m)
+              { msVisible = v
+              , msPos = pos
+              , msOpenedAt = if v then now else msOpenedAt st
+              }) others)
             return v
           Nothing -> do
             writeTVar menus (Map.insert key
-              (info, path, MenuState Nothing 0 False True pos) m)
+              (info, path, MenuState
+                { msTree = Nothing
+                , msRevision = 0
+                , msWatched = False
+                , msVisible = True
+                , msPos = pos
+                , msOpenedAt = now
+                })
+              (hideOthers key m))
             return True
       when nowVisible $ void $ forkIO $ do
         fetchLayout client menus key
         watch client menus key
 
-renderMenus :: Client -> Menus -> IO ()
-renderMenus client menus = do
+-- | Renders all visible menus (call once per frame, AFTER the tray
+-- window's end, so menu windows submit on top). Closes a menu on any
+-- mouse press outside its window; button edges are detected by
+-- sampling SDL state once per frame against the previous frame's.
+renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> IO ()
+renderMenus client menus prevButtons mDisplay = do
+  pressed <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
-  forM_ (Map.toList m) $ \(key, (info, path, st)) -> do
+  now <- getPOSIXTime
+  forM_ (Map.toList m) $ \(key, (info, path, st)) ->
     when (msVisible st) $ do
       let winId = "homgbmenu-" ++ show myPid ++ "-" ++ key
           menuFlags = foldl1 combineFlags
@@ -105,36 +130,55 @@ renderMenus client menus = do
             ]
       withImVec2 (msPos st) $ \posPtr ->
         Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-      hoveredRef <- newIORef False
       beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
         $ \label -> Raw.begin label Nothing (Just menuFlags)
       when beginVisible $ do
+        rect <- windowRect
         -- The root node (id 0) is virtual and may itself claim
         -- "children-display: submenu" (steam does) - always flatten it.
         forM_ (msTree st) $ \tree ->
           forM_ (lnChildren tree) $
-            renderNode client menus key path info hoveredRef
+            renderNode client menus key path info
+        -- Ignore the press that opened this menu (same frame / fresh
+        -- press right after opening).
+        let openedAgo = now - msOpenedAt st
+        when (pressed && openedAgo > 0.25) $ do
+          inside <- mouseInRect rect
+          unless inside $ closeMenu menus key
       end
-      -- close on left-click outside the menu
-      anyHovered <- readIORef hoveredRef
-      outsideClick <- isItemClicked ImGuiMouseButton_Left
-      when (outsideClick && not anyHovered) $
-        closeMenu menus key
   where
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
       ImGuiWindowFlags (a .|. b)
     withImVec2 v f = alloca $ \p -> poke p v >> f p
+    windowRect = do
+      ImVec2 x y <- getWindowPos
+      ImVec2 w h <- getWindowSize
+      return (x, y, w, h)
+    mouseInRect (x, y, w, h) = do
+      ImVec2 mx my <- Raw.getMousePos
+      -- the SDL backend reports MousePos = -FLT_MAX when the pointer
+      -- leaves our window; a press then means a click on a foreign
+      -- window, i.e. definitively outside the menu
+      return (mx > -1.0e30 && my > -1.0e30
+                && mx >= x && mx < x + w && my >= y && my < y + h)
 
--- | Renders one node; records hover in the ref. Closes the menu (via
--- 'closeMenu') when a leaf item is clicked.
-renderNode :: Client -> Menus -> String -> ObjectPath -> ItemInfo -> IORef Bool
+-- | True if the left or right button went down since the last frame,
+-- polled globally via XQueryPointer (SDL misses clicks on other
+-- windows). Nothing display -> no edge detection.
+samplePressEdge :: Maybe Display -> TVar (Bool, Bool) -> IO Bool
+samplePressEdge Nothing _ = return False
+samplePressEdge (Just dpy) prevVar = do
+  (_, _, _, _, _, _, _, mask) <- queryPointer dpy (defaultRootWindow dpy)
+  let cur = (mask .&. button1Mask /= 0, mask .&. button3Mask /= 0)
+  prev <- readTVarIO prevVar
+  atomically $ writeTVar prevVar cur
+  return (fst cur && not (fst prev) || snd cur && not (snd prev))
+
+-- | Renders one node; closes the menu (via 'closeMenu') when a leaf
+-- item is clicked.
+renderNode :: Client -> Menus -> String -> ObjectPath -> ItemInfo
            -> LayoutNode -> IO ()
-renderNode client menus key path info hoveredRef node =
-  renderNode' client menus key path info hoveredRef node
-
-renderNode' :: Client -> Menus -> String -> ObjectPath -> ItemInfo -> IORef Bool
-            -> LayoutNode -> IO ()
-renderNode' client menus key path info hoveredRef node
+renderNode client menus key path info node
   | not (menuItemVisible node) = return ()
   | menuItemIsSeparator node = Raw.separator
   | menuItemChildrenDisplay node == Just "submenu" = do
@@ -142,19 +186,15 @@ renderNode' client menus key path info hoveredRef node
       -- render submenu headers as non-clickable labels with indented
       -- children (dbusmenu submenus are rare in tray menus).
       textDisabled (menuItemLabel node)
-      hovered <- isItemHovered
-      when hovered $ writeIORef hoveredRef True
       forM_ (lnChildren node) $ \child -> do
         indent 14
-        renderNode client menus key path info hoveredRef child
+        renderNode client menus key path info child
       unindent 14
   | otherwise = do
       let label = toggleLabel node
       beginDisabled (not (menuItemEnabled node))
       clicked <- selectable label
       endDisabled
-      hovered <- isItemHovered
-      when hovered $ writeIORef hoveredRef True
       when clicked $ do
         ts <- fmap (round . (realToFrac :: POSIXTime -> Double)) getPOSIXTime
         void $ forkIO $
@@ -165,6 +205,13 @@ renderNode' client menus key path info hoveredRef node
 closeMenu :: Menus -> String -> IO ()
 closeMenu menus key = atomically $ modifyTVar' menus $
   Map.adjust (\(i, p, st) -> (i, p, st { msVisible = False })) key
+
+-- Only one tray menu may be open at a time: opening one hides the rest.
+hideOthers :: String -> MenusMap -> MenusMap
+hideOthers self = Map.mapWithKey $ \k (i, p, st) ->
+  if k == self then (i, p, st) else (i, p, st { msVisible = False })
+
+type MenusMap = Map.Map String (ItemInfo, ObjectPath, MenuState)
 
 toggleLabel :: LayoutNode -> T.Text
 toggleLabel node =

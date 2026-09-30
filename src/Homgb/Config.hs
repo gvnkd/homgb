@@ -136,6 +136,11 @@ data Config = Config
   , configTrayIconSize :: Int
   , configTraySpacing :: Int
   , configTrayPosition :: String
+
+  -- keyboard
+  , configKbHotkey :: String
+  , configKbLayouts :: [String]
+  , configKbIndicator :: Bool
   }
 
 (.:.) :: FromJSON a => Y.Parser (Maybe Y.Object) -> Text.Text -> Y.Parser (Maybe a)
@@ -268,6 +273,12 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "spacing" 4
   -- configTrayPosition
     <*> secondLevel o "tray" "position" "top-right"
+  -- configKbHotkey
+    <*> secondLevel o "keyboard" "hotkey" "ctrl-shift-space"
+  -- configKbLayouts
+    <*> secondLevel o "keyboard" "layouts" []
+  -- configKbIndicator
+    <*> secondLevel o "keyboard" "indicator" True
   parseJSON _ = fail "Expected Object for Config value"
 
 data ButtonConfig = Button
@@ -337,4 +348,8 @@ defaultConfigText = Text.pack $ unlines
   , "  icon-size: 22"
   , "  spacing: 4"
   , "  position: top-right"
+  , "keyboard:"
+  , "  hotkey: ctrl-shift-space"
+  , "  layouts: []"
+  , "  indicator: true"
   ]

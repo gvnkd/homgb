@@ -15,15 +15,18 @@ library
                      , Homgb.Render
                      , Homgb.Config
                      , Homgb.Helpers
-                     , Homgb.GL.Texture
+                      , Homgb.GL.Texture
+                      , Homgb.GL.Visual
                      , Homgb.Notifications.Data
                      , Homgb.Notifications.Daemon
                      , Homgb.Tray
                      , Homgb.Tray.Icons
                      , Homgb.Tray.Render
-                     , Homgb.Tray.Menu.Client
-                     , Homgb.Tray.Menu.Tree
-                     , Homgb.Tray.Menu.Render
+                      , Homgb.Tray.Menu.Client
+                      , Homgb.Tray.Menu.Tree
+                      , Homgb.Tray.Menu.Render
+                      , Homgb.Keyboard
+                      , Homgb.Keyboard.Xcb
   build-depends:       base >= 4.7 && < 5
                      , bytestring
                      , sdl2 >= 2.5
@@ -51,6 +54,8 @@ library
                      , split
                      , haskell-gettext
                      , lens
+  c-sources:           cbits/homgb-xkb.c
+  pkgconfig-depends:   xcb, xcb-xkb, gl
   default-language:    Haskell2010
   ghc-options:         -Wall -Wcompat -Wredundant-constraints
 
@@ -58,6 +63,9 @@ executable homgb
   hs-source-dirs:      app
   main-is:             Main.hs
   build-depends:       base
-                     , homgb
+                      , homgb
   default-language:    Haskell2010
-  ghc-options:         -Wall -O2
+  -- -threaded: the design relies on blocking C calls in DBus/X11/XCB
+  -- threads coexisting with the SDL render loop (see architecture notes
+  -- in .opencode/MEMORIES.md); without this they freeze the whole RTS.
+  ghc-options:         -Wall -O2 -threaded

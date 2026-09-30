@@ -10,8 +10,12 @@ module Homgb.Tray
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
+import Control.Exception (catch, IOException)
 import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
+import Graphics.X11.Xlib (Display)
+import Graphics.X11.Xlib.Display (openDisplay)
+import Graphics.X11.Xlib.Misc (queryPointer)
 import System.IO (hPutStrLn, stderr)
 
 import DBus.Client (Client, connectSession)
@@ -39,6 +43,11 @@ data TrayEnv = TrayEnv
   , trayTextures :: TVar (Map.Map String (Int, Maybe GLuint))
     -- ^ icon textures: item bus name -> (version, texture)
   , trayMenus :: Menus
+  , trayPrevButtons :: TVar (Bool, Bool)
+    -- ^ (left, right) mouse button state last frame, for press edges
+  , trayDisplay :: Maybe Display
+    -- ^ own X connection for global pointer/button polls (SDL only
+    -- tracks events delivered to its own window)
   }
 
 startTray :: IO TrayEnv
@@ -46,9 +55,14 @@ startTray = do
   tState <- newTVarIO $ TrayState [] 0
   textures <- newTVarIO Map.empty
   menus <- newMenus
+  prevButtons <- newTVarIO (False, False)
+  mDisplay <- catch (Just <$> openDisplay "") ignoreIO
   client <- connectSession
   _ <- forkIO $ runHost tState client
-  return $ TrayEnv tState client textures menus
+  return $ TrayEnv tState client textures menus prevButtons mDisplay
+
+ignoreIO :: IOException -> IO (Maybe Display)
+ignoreIO _ = return Nothing
 
 runHost :: TVar TrayState -> Client -> IO ()
 runHost tState client = do
