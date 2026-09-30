@@ -38,7 +38,7 @@ import DBus.Internal.Types (BusName(..), ObjectPath)
 
 import DearImGui hiding (begin)
 import qualified DearImGui.Raw as Raw (begin, separator, getMousePos
-                                       , setNextWindowPos)
+                                       , setNextWindowPos, pushStyleColor)
 
 import StatusNotifier.Host.Service (ItemInfo(..))
 
@@ -118,6 +118,7 @@ openItemMenu client menus info trayWinPos screenSize =
 data MenuFrame = MenuFrame
   { mfKey :: String
   , mfRootPos :: (Float, Float)
+  , mfSize :: (Float, Float)
   }
 
 -- | Renders all visible menus into the current (menu surface) ImGui
@@ -147,36 +148,51 @@ renderMenus client menus prevButtons mDisplay winPos = do
               ]
         withImVec2 (ImVec2 0 0) $ \posPtr ->
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-        beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
-          $ \label -> Raw.begin label Nothing (Just menuFlags)
-        when beginVisible $ do
-          rect <- windowRect
-          -- The root node (id 0) is virtual and may itself claim
-          -- "children-display: submenu" (steam does) - always flatten.
-          forM_ (msTree st) $ \tree ->
-            forM_ (lnChildren tree) $
-              renderNode client menus key path info
-          -- Ignore the press that opened this menu (same frame /
-          -- fresh press right after opening).
-          let openedAgo = now - msOpenedAt st
-          when (pressed && openedAgo > 0.25) $ do
-            -- rect is menu-surface-local, pointer is root (XQueryPointer)
-            let (wx, wy) = winPos
-                (rx, ry, rw, rh) = rect
-                inside = fromIntegral rootX >= wx + floor rx
-                  && fromIntegral rootX < wx + ceiling (rx + rw)
-                  && fromIntegral rootY >= wy + floor ry
-                  && fromIntegral rootY < wy + ceiling (ry + rh)
-            unless inside $ closeMenu menus key
-        end
-        let ImVec2 px py = msPos st
-        return (Just (MenuFrame key (px, py)))
+        -- opaque bg + border: the default semi-transparent border
+        -- shimmers on ARGB windows under a compositor
+        frame <- withImVec4 (ImVec4 0.13 0.14 0.15 1.0) $ \bgPtr ->
+          withImVec4 (ImVec4 0.35 0.36 0.40 1.0) $ \borderPtr -> do
+            Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+            Raw.pushStyleColor ImGuiCol_Border borderPtr
+            beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
+              $ \label -> Raw.begin label Nothing (Just menuFlags)
+            mRect <- if beginVisible
+              then do
+                rect <- windowRect
+                -- The root node (id 0) is virtual and may itself claim
+                -- "children-display: submenu" (steam does) - flatten.
+                forM_ (msTree st) $ \tree ->
+                  forM_ (lnChildren tree) $
+                    renderNode client menus key path info
+                -- Ignore the press that opened this menu (same frame /
+                -- fresh press right after opening).
+                let openedAgo = now - msOpenedAt st
+                when (pressed && openedAgo > 0.25) $ do
+                  -- rect is menu-surface-local, pointer is root (XQueryPointer)
+                  let (wx, wy) = winPos
+                      (rx, ry, rw, rh) = rect
+                      inside = fromIntegral rootX >= wx + floor rx
+                        && fromIntegral rootX < wx + ceiling (rx + rw)
+                        && fromIntegral rootY >= wy + floor ry
+                        && fromIntegral rootY < wy + ceiling (ry + rh)
+                  unless inside $ closeMenu menus key
+                return (Just rect)
+              else return Nothing
+            end
+            popStyleColor 2
+            let ImVec2 px py = msPos st
+                size = case mRect of
+                  Just (_, _, rw, rh) -> (rw, rh)
+                  Nothing -> (0, 0)
+            return (MenuFrame key (px, py) size <$ mRect)
+        return frame
       else return Nothing
   return (listToMaybe (catMaybes frames))
   where
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
       ImGuiWindowFlags (a .|. b)
     withImVec2 v f = alloca $ \p -> poke p v >> f p
+    withImVec4 v f = alloca $ \p -> poke p v >> f p
     windowRect = do
       ImVec2 x y <- getWindowPos
       ImVec2 w h <- getWindowSize

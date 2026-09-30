@@ -7,7 +7,7 @@ module Homgb.Tray
   , startTray
   ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
@@ -65,17 +65,26 @@ ignoreIO :: IOException -> IO (Maybe Display)
 ignoreIO _ = return Nothing
 
 runHost :: TVar TrayState -> Client -> IO ()
-runHost tState client = do
-  mHost <- SHost.build SHost.defaultParams
-    { SHost.dbusClient = Just client
-    , SHost.uniqueIdentifier = "homgb"
-    , SHost.startWatcher = True
-    }
-  case mHost of
-    Nothing -> hPutStrLn stderr "tray: failed to start SNI host"
-    Just host -> do
-      _ <- SHost.addUpdateHandler host (updateHandler tState)
-      return ()
+runHost tState client = go (10 :: Int)
+  where
+    go 0 = hPutStrLn stderr "tray: failed to start SNI host"
+    go n = do
+      mHost <- SHost.build SHost.defaultParams
+        { SHost.dbusClient = Just client
+        , SHost.uniqueIdentifier = "homgb"
+        , SHost.startWatcher = True
+        }
+      case mHost of
+        Nothing -> do
+          -- the watcher name may still be held by a previous homgb
+          -- instance that is releasing it, or our request is queued
+          -- behind it; retry instead of giving up
+          threadDelay 1000000
+          go (n - 1)
+        Just host -> do
+          _ <- SHost.addUpdateHandler host (updateHandler tState)
+          hPutStrLn stderr "tray: SNI host started"
+          return ()
   -- the dbus client keeps its own dispatcher thread alive; signal
   -- callbacks (our updateHandler) run there, so this thread may exit
 

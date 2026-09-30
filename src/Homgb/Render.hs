@@ -155,8 +155,18 @@ drawMenusSurface app = do
     Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
     Just f -> do
       forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
-      let (px, py) = mfRootPos f
-      moveSurfaceWindow surf (floor px) (floor py)
+      -- keep the whole menu on screen: with the tray at the right
+      -- edge the cursor-anchored position would push the surface off
+      let (sw, sh) = appScreenSize app
+          (px, py) = mfRootPos f
+          (mw, mh) = mfSize f
+          x = if floor px + ceiling mw > sw - 4
+                then max 0 (sw - 4 - ceiling mw)
+                else floor px
+          y = if floor py + ceiling mh > sh - 4
+                then max 0 (sh - 4 - ceiling mh)
+                else floor py
+      moveSurfaceWindow surf x y
 
 -- | Draw one popup at local x=2 (the surface window hugs the popup
 -- stack, so no window-width math is needed here).
