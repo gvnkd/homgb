@@ -44,23 +44,27 @@ run = do
   screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
   traySurf <- createSurface "homgb-tray" (V2 500 80)
   popSurf <- createSurface "homgb-popups" (V2 340 200)
+  menuSurf <- createSurface "homgb-menu" (V2 360 560)
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
     tagSurface dpy popSurf WmNotification
-  mapM_ initSurfaceBackend [traySurf, popSurf]
+    tagSurface dpy menuSurf WmPopupMenu
+  mapM_ initSurfaceBackend [traySurf, popSurf, menuSurf]
   -- making a GL context current maps a hidden SDL window; the
   -- popup surface starts hidden (skip-draw while no popups live)
   SDL3.hideWindow (sWindow popSurf)
-  app <- initialAppState tState tray kb (Surfaces traySurf popSurf) screen
+  SDL3.hideWindow (sWindow menuSurf)
+  app <- initialAppState tState tray kb (Surfaces traySurf popSurf menuSurf) screen
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface
     managed_ $ bracket_
-      (mapM_ (withSurfaceContext (void openGL3Init)) [traySurf, popSurf])
-      (mapM_ (withSurfaceContext openGL3Shutdown) [popSurf, traySurf])
+      (mapM_ (withSurfaceContext (void openGL3Init)) [traySurf, popSurf, menuSurf])
+      (mapM_ (withSurfaceContext openGL3Shutdown) [menuSurf, popSurf, traySurf])
     liftIO $ do
       SDL3.hideWindow (sWindow popSurf)
+      SDL3.hideWindow (sWindow menuSurf)
       forM_ (trayDisplay tray) $ \dpy -> showSurface dpy traySurf
       mainLoop app
   SDL3.quitVideo
@@ -93,6 +97,7 @@ mainLoop app = do
       then forM_ (trayDisplay (appTray app)) $ \dpy ->
              hideSurface dpy (surfacesPopups (appSurfaces app))
       else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+    drawOn (surfacesMenus (appSurfaces app)) (drawMenusSurface app)
     mainLoop app
 
 -- Each surface draws with its own ImGui and GL context (a GLX context

@@ -3,6 +3,7 @@
 module Homgb.Tray.Menu.Render
   ( MenuState(..)
   , Menus
+  , MenuFrame(..)
   , newMenus
   , openItemMenu
   , renderMenus
@@ -11,8 +12,9 @@ module Homgb.Tray.Menu.Render
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-import Control.Monad (when, unless, forM_, void)
+import Control.Monad (when, unless, forM, forM_, void)
 import Data.Bits ((.|.))
+import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -66,19 +68,23 @@ menuKey :: ItemInfo -> String
 menuKey info = case itemServiceName info of
   BusName s -> s
 
--- | Called on right-click: toggles the menu, anchors it at the mouse
--- cursor (clamped inside the overlay window), and fetches the layout
--- (in a forked thread; dbus blocks).
-openItemMenu :: Client -> Menus -> ItemInfo -> ImVec2 -> IO ()
-openItemMenu client menus info winSize =
+-- | Called on right-click: toggles the menu. The menu lives on its
+-- own surface window (EWMH POPUP_MENU), so the stored position is in
+-- ROOT screen coordinates: tray-local mouse position plus the tray
+-- window origin, clamped inside the screen.
+openItemMenu :: Client -> Menus -> ItemInfo -> (Int, Int) -> (Int, Int) -> IO ()
+openItemMenu client menus info trayWinPos screenSize =
   case menuPath info of
     Nothing -> return ()
     Just path -> do
       let key = menuKey info
       ImVec2 mx my <- Raw.getMousePos
       now <- getPOSIXTime
-      let ImVec2 wx wy = winSize
-          pos = ImVec2 (min mx (wx - 180)) (min my (wy - 60))
+      let (wx, wy) = trayWinPos
+          (sw, sh) = screenSize
+          rx = min (max 0 (floor mx + wx)) (sw - 60)
+          ry = min (max 0 (floor my + wy)) (sh - 40)
+          pos = ImVec2 (fromIntegral rx) (fromIntegral ry)
       nowVisible <- atomically $ do
         m <- readTVar menus
         case Map.lookup key m of
@@ -107,53 +113,66 @@ openItemMenu client menus info winSize =
         fetchLayout client menus key
         watch client menus key
 
--- | Renders all visible menus (call once per frame, AFTER the tray
--- window's end, so menu windows submit on top). Closes a menu on any
--- mouse press outside its window; presses are detected by polling
--- XQueryPointer (root coordinates) once per frame — ImGui's own mouse
--- position goes stale once the pointer leaves our surfaces.
+-- | The menu currently being rendered (single-open invariant) and its
+-- root position, for the caller to move the menu surface window.
+data MenuFrame = MenuFrame
+  { mfKey :: String
+  , mfRootPos :: (Float, Float)
+  }
+
+-- | Renders all visible menus into the current (menu surface) ImGui
+-- context; each menu window sits at the surface's local origin (the
+-- surface window itself is moved to the stored root position). Closes
+-- a menu on any mouse press outside its window; presses are detected
+-- by polling XQueryPointer (root coordinates) once per frame — ImGui's
+-- own mouse position goes stale once the pointer leaves our surfaces.
 renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display
-            -> (Int, Int) -> IO ()
+            -> (Int, Int) -> IO (Maybe MenuFrame)
 renderMenus client menus prevButtons mDisplay winPos = do
   (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
   now <- getPOSIXTime
-  forM_ (Map.toList m) $ \(key, (info, path, st)) ->
-    when (msVisible st) $ do
-      let winId = "homgbmenu-" ++ show myPid ++ "-" ++ key
-          menuFlags = foldl1 combineFlags
-            [ ImGuiWindowFlags_NoTitleBar
-            , ImGuiWindowFlags_NoResize
-            , ImGuiWindowFlags_NoMove
-            , ImGuiWindowFlags_NoCollapse
-            , ImGuiWindowFlags_AlwaysAutoResize
-            , ImGuiWindowFlags_NoFocusOnAppearing
-            ]
-      withImVec2 (msPos st) $ \posPtr ->
-        Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-      beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
-        $ \label -> Raw.begin label Nothing (Just menuFlags)
-      when beginVisible $ do
-        rect <- windowRect
-        -- The root node (id 0) is virtual and may itself claim
-        -- "children-display: submenu" (steam does) - always flatten it.
-        forM_ (msTree st) $ \tree ->
-          forM_ (lnChildren tree) $
-            renderNode client menus key path info
-        -- Ignore the press that opened this menu (same frame / fresh
-        -- press right after opening).
-        let openedAgo = now - msOpenedAt st
-        when (pressed && openedAgo > 0.25) $ do
-          -- rect is tray-local (ImGui), pointer is root (XQueryPointer)
-          let (wx, wy) = winPos
-              (rx, ry, rw, rh) = rect
-              inside = fromIntegral rootX >= wx + floor rx
-                && fromIntegral rootX < wx + ceiling (rx + rw)
-                && fromIntegral rootY >= wy + floor ry
-                && fromIntegral rootY < wy + ceiling (ry + rh)
-          unless inside $ closeMenu menus key
-      end
+  frames <- forM (Map.toList m) $ \(key, (info, path, st)) ->
+    if msVisible st
+      then do
+        let winId = "homgbmenu-" ++ show myPid ++ "-" ++ key
+            menuFlags = foldl1 combineFlags
+              [ ImGuiWindowFlags_NoTitleBar
+              , ImGuiWindowFlags_NoResize
+              , ImGuiWindowFlags_NoMove
+              , ImGuiWindowFlags_NoCollapse
+              , ImGuiWindowFlags_AlwaysAutoResize
+              , ImGuiWindowFlags_NoFocusOnAppearing
+              ]
+        withImVec2 (ImVec2 0 0) $ \posPtr ->
+          Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+        beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
+          $ \label -> Raw.begin label Nothing (Just menuFlags)
+        when beginVisible $ do
+          rect <- windowRect
+          -- The root node (id 0) is virtual and may itself claim
+          -- "children-display: submenu" (steam does) - always flatten.
+          forM_ (msTree st) $ \tree ->
+            forM_ (lnChildren tree) $
+              renderNode client menus key path info
+          -- Ignore the press that opened this menu (same frame /
+          -- fresh press right after opening).
+          let openedAgo = now - msOpenedAt st
+          when (pressed && openedAgo > 0.25) $ do
+            -- rect is menu-surface-local, pointer is root (XQueryPointer)
+            let (wx, wy) = winPos
+                (rx, ry, rw, rh) = rect
+                inside = fromIntegral rootX >= wx + floor rx
+                  && fromIntegral rootX < wx + ceiling (rx + rw)
+                  && fromIntegral rootY >= wy + floor ry
+                  && fromIntegral rootY < wy + ceiling (ry + rh)
+            unless inside $ closeMenu menus key
+        end
+        let ImVec2 px py = msPos st
+        return (Just (MenuFrame key (px, py)))
+      else return Nothing
+  return (listToMaybe (catMaybes frames))
   where
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
       ImGuiWindowFlags (a .|. b)

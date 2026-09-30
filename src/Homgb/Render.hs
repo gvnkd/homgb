@@ -4,6 +4,7 @@ module Homgb.Render
   ( frameUpkeep
   , drawTraySurface
   , drawPopupSurface
+  , drawMenusSurface
   ) where
 
 import Control.Concurrent.STM.TVar
@@ -41,6 +42,7 @@ import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
   , resizeSurfaceWindow, showSurface, surfaceWindowSize)
 import Homgb.Tray (TrayEnv(..), trayTextures)
+import Homgb.Tray.Menu.Render (MenuFrame(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 
 -- | Per-frame state maintenance: popup expiry (checked in the frame
@@ -68,7 +70,8 @@ drawTraySurface app = do
   V2 surfW surfH <- surfaceWindowSize surf
   winPos <- SDL3.windowPosition (sWindow surf)
   (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config
-    (appKeyboard app) (ImVec2 (fromIntegral surfW) (fromIntegral surfH)) winPos
+    (appKeyboard app) (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
+    winPos (appScreenSize app)
   let (sw, sh) = appScreenSize app
       (x, y) = case configTrayPosition config of
         "top-left" -> (10, 10)
@@ -136,6 +139,24 @@ isExpired config now noti =
            else fromIntegral (configNotiDefaultTimeout config)
       age = realToFrac (diffUTCTime now (notiCreatedAt noti)) * 1000 :: Double
   in timeout /= 0 && age > ms
+
+-- | Draw visible dbusmenus into the menu surface (EWMH POPUP_MENU):
+-- the menu window sits at the surface's local origin and the surface
+-- window is moved to the stored root position. The surface hides when
+-- no menu is open.
+drawMenusSurface :: AppState -> IO ()
+drawMenusSurface app = do
+  let surf = surfacesMenus (appSurfaces app)
+      env = appTray app
+  mFrame <- renderMenus (trayClient env) (trayMenus env)
+    (trayPrevButtons env) (trayDisplay env)
+    =<< SDL3.windowPosition (sWindow surf)
+  case mFrame of
+    Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
+    Just f -> do
+      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+      let (px, py) = mfRootPos f
+      moveSurfaceWindow surf (floor px) (floor py)
 
 -- | Draw one popup at local x=2 (the surface window hugs the popup
 -- stack, so no window-width math is needed here).

@@ -59,6 +59,7 @@ data Surface = Surface
 data Surfaces = Surfaces
   { surfacesTray :: Surface
   , surfacesPopups :: Surface
+  , surfacesMenus :: Surface
   }
 
 -- | Create a hidden, untagged, borderless transparent window with its

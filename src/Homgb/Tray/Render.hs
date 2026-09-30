@@ -32,7 +32,7 @@ import Homgb.GL.Texture
 import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..))
 import Homgb.Tray.Icons (iconRgbaSrc)
-import Homgb.Tray.Menu.Render (openItemMenu, renderMenus)
+import Homgb.Tray.Menu.Render (openItemMenu)
 
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
@@ -41,8 +41,8 @@ type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 -- tray window sits at the surface's local origin; returns the measured
 -- content size so the caller can shrink-wrap the SDL window.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Maybe KeyboardEnv
-           -> ImVec2 -> (Int, Int) -> IO (Float, Float)
-renderTray env textures config kbEnv surfSize winPos = do
+           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
+renderTray env textures config kbEnv surfSize winPos screenSize = do
   state <- readTVarIO (trayState env)
   dbg0 <- lookupEnv "HOMGB_DEBUG"
   case dbg0 of
@@ -82,10 +82,8 @@ renderTray env textures config kbEnv surfSize winPos = do
       forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
         when (idx > 0) Raw.sameLine
         renderItem env textures config iconSize btn traySpacing idx item surfSize
+          winPos screenSize
       renderIndicator kbEnv config (length items)
-      -- menus submit after the tray window so they draw on top of it
-      renderMenus (trayClient env) (trayMenus env) (trayPrevButtons env)
-        (trayDisplay env) winPos
     else return ()
   end
   popStyleColor 1
@@ -117,8 +115,9 @@ renderIndicator kbEnv config itemCount =
       when clicked $ rotateLayout kb
 
 renderItem :: TrayEnv -> TrayTextures -> Config -> Float -> Float -> Float
-           -> Int -> TrayItem -> ImVec2 -> IO ()
-renderItem env textures config _iconSize btn _traySpacing _idx item surfSize = do
+           -> Int -> TrayItem -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
+renderItem env textures config _iconSize btn _traySpacing _idx item surfSize
+           winPos screenSize = do
   let info = tiInfo item
       name = itemServiceName info
       path = itemServicePath info
@@ -165,7 +164,7 @@ renderItem env textures config _iconSize btn _traySpacing _idx item surfSize = d
       Just _ -> hPutStrLn stderr $ "tray right-click: " ++ show (coerce name :: String)
         ++ " menu=" ++ show (menuPath info)
       Nothing -> return ()
-    openItemMenu (trayClient env) (trayMenus env) info surfSize
+    openItemMenu (trayClient env) (trayMenus env) info winPos screenSize
 
   setItemTooltip (T.pack (tooltipText info))
   where
