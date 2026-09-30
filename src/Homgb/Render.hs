@@ -5,6 +5,7 @@ module Homgb.Render
   , drawTraySurface
   , drawPopupSurface
   , drawMenusSurface
+  , anyMenuOpen
   ) where
 
 import Control.Concurrent.STM.TVar
@@ -17,6 +18,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
+import qualified Data.Map.Strict as Map
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
@@ -42,7 +44,7 @@ import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
   , resizeSurfaceWindow, showSurface, surfaceWindowSize)
 import Homgb.Tray (TrayEnv(..), trayTextures)
-import Homgb.Tray.Menu.Render (MenuFrame(..), renderMenus)
+import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 
 -- | Per-frame state maintenance: popup expiry (checked in the frame
@@ -144,6 +146,18 @@ isExpired config now noti =
 -- the menu window sits at the surface's local origin and the surface
 -- window is moved to the stored root position. The surface hides when
 -- no menu is open.
+-- | Any menu currently open? Drives whether the menu surface is
+-- rendered at all (drawing it maps it - SDL_GL_SwapWindow maps hidden
+-- windows - so an idle menu surface must be skipped entirely).
+anyMenuOpen :: AppState -> IO Bool
+anyMenuOpen app = do
+  m <- readTVarIO (trayMenus (appTray app))
+  return (any (\(_, _, st) -> msVisible st) (Map.elems m))
+
+-- | Draw visible dbusmenus into the menu surface (EWMH POPUP_MENU):
+-- the menu window sits at the surface's local origin and the surface
+-- window is moved to the stored root position. The surface hides when
+-- no menu is open.
 drawMenusSurface :: AppState -> IO ()
 drawMenusSurface app = do
   let surf = surfacesMenus (appSurfaces app)
@@ -154,7 +168,6 @@ drawMenusSurface app = do
   case mFrame of
     Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
     Just f -> do
-      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
       -- keep the whole menu on screen: with the tray at the right
       -- edge the cursor-anchored position would push the surface off
       let (sw, sh) = appScreenSize app
@@ -166,7 +179,11 @@ drawMenusSurface app = do
           y = if floor py + ceiling mh > sh - 4
                 then max 0 (sh - 4 - ceiling mh)
                 else floor py
+      -- move BEFORE show: the WM places a freshly mapped window
+      -- itself (xmonad centers it), and mapping at the target avoids
+      -- a visible jump from the center
       moveSurfaceWindow surf x y
+      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
 
 -- | Draw one popup at local x=2 (the surface window hugs the popup
 -- stack, so no window-width math is needed here).

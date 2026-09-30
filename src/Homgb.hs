@@ -97,7 +97,13 @@ mainLoop app = do
       then forM_ (trayDisplay (appTray app)) $ \dpy ->
              hideSurface dpy (surfacesPopups (appSurfaces app))
       else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
-    drawOn (surfacesMenus (appSurfaces app)) (drawMenusSurface app)
+    -- the menu surface is drawn only while a menu is open: swapping a
+    -- hidden SDL window maps it (stale black frame over other surfaces)
+    menuOpen <- anyMenuOpen app
+    if menuOpen
+      then drawOn (surfacesMenus (appSurfaces app)) (drawMenusSurface app)
+      else forM_ (trayDisplay (appTray app)) $ \dpy ->
+             hideSurface dpy (surfacesMenus (appSurfaces app))
     mainLoop app
 
 -- Each surface draws with its own ImGui and GL context (a GLX context

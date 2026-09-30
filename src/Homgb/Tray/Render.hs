@@ -94,7 +94,8 @@ renderTray env textures config kbEnv surfSize winPos screenSize = do
   let n = length items
       gaps = fromIntegral (max 0 (n - 1)) * traySpacing
       kbWidth = case kbEnv of
-        Just _ | configKbIndicator config -> fromIntegral (configTrayIconSize config) + 8
+        Just _ | configKbIndicator config ->
+          fromIntegral (configTrayIconSize config) + 18
         _ -> 0
       w = fromIntegral n * btn + gaps + kbWidth + 16
       h = btn + 16

@@ -135,7 +135,12 @@ hideSurface dpy surf = do
     SDL3.hideWindow (sWindow surf)
     mId <- surfaceX11Id surf
     forM_ mId $ \wid -> c_x_unmap dpy (fromIntegral wid)
-    atomically $ writeTVar (sShown surf) False
+    atomically $ do
+      writeTVar (sShown surf) False
+      -- the WM re-places the window when it is mapped again; forget
+      -- the cached geometry so the next move/resize is re-applied
+      writeTVar (sLastPos surf) Nothing
+      writeTVar (sLastSize surf) Nothing
 
 surfaceShown :: Surface -> IO Bool
 surfaceShown = readTVarIO . sShown

@@ -149,33 +149,39 @@ renderMenus client menus prevButtons mDisplay winPos = do
               ]
         withImVec2 (ImVec2 0 0) $ \posPtr ->
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-        -- opaque bg + border: the default semi-transparent border
-        -- shimmers on ARGB windows under a compositor
-        beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
-          $ \label -> Raw.begin label Nothing (Just menuFlags)
-        mRect <- if beginVisible
-          then do
-            rect <- windowRect
-            -- The root node (id 0) is virtual and may itself claim
-            -- "children-display: submenu" (steam does) - flatten.
-            forM_ (msTree st) $ \tree ->
-              forM_ (lnChildren tree) $
-                renderNode client menus key path info
-            -- Ignore the press that opened this menu (same frame /
-            -- fresh press right after opening).
-            let openedAgo = now - msOpenedAt st
-            when (pressed && openedAgo > 0.25) $ do
-              -- rect is menu-surface-local, pointer is root (XQueryPointer)
-              let (wx, wy) = winPos
-                  (rx, ry, rw, rh) = rect
-                  inside = fromIntegral rootX >= wx + floor rx
-                    && fromIntegral rootX < wx + ceiling (rx + rw)
-                    && fromIntegral rootY >= wy + floor ry
-                    && fromIntegral rootY < wy + ceiling (ry + rh)
-              unless inside $ closeMenu menus key
-            return (Just rect)
-          else return Nothing
-        end
+        -- tinted menu background (default is near-black); alpha < 1
+        -- keeps the desktop faintly visible under compositing
+        mRect <- withImVec4 (ImVec4 0.20 0.24 0.32 0.97) $ \bgPtr ->
+          withImVec4 (ImVec4 0.55 0.62 0.78 0.90) $ \borderPtr -> do
+            Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+            Raw.pushStyleColor ImGuiCol_Border borderPtr
+            beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
+              $ \label -> Raw.begin label Nothing (Just menuFlags)
+            r <- if beginVisible
+              then do
+                rect <- windowRect
+                -- The root node (id 0) is virtual and may itself claim
+                -- "children-display: submenu" (steam does) - flatten.
+                forM_ (msTree st) $ \tree ->
+                  forM_ (lnChildren tree) $
+                    renderNode client menus key path info
+                -- Ignore the press that opened this menu (same frame /
+                -- fresh press right after opening).
+                let openedAgo = now - msOpenedAt st
+                when (pressed && openedAgo > 0.25) $ do
+                  -- rect is menu-surface-local, pointer is root (XQueryPointer)
+                  let (wx, wy) = winPos
+                      (rx, ry, rw, rh) = rect
+                      inside = fromIntegral rootX >= wx + floor rx
+                        && fromIntegral rootX < wx + ceiling (rx + rw)
+                        && fromIntegral rootY >= wy + floor ry
+                        && fromIntegral rootY < wy + ceiling (ry + rh)
+                  unless inside $ closeMenu menus key
+                return (Just rect)
+              else return Nothing
+            end
+            popStyleColor 2
+            return r
         let ImVec2 px py = msPos st
             size = case mRect of
               Just (_, _, rw, rh) -> (rw, rh)
@@ -187,6 +193,7 @@ renderMenus client menus prevButtons mDisplay winPos = do
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
       ImGuiWindowFlags (a .|. b)
     withImVec2 v f = alloca $ \p -> poke p v >> f p
+    withImVec4 v f = alloca $ \p -> poke p v >> f p
     withImVec4 v f = alloca $ \p -> poke p v >> f p
     windowRect = do
       ImVec2 x y <- getWindowPos
