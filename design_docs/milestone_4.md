@@ -8,6 +8,55 @@ to add the notification center panel.
 Read `.opencode/MEMORIES.md`, `design_docs/milestone_1.md` ..
 `milestone_3.md`, then this file.
 
+## Revised plan (2026-09-30, after investigating SDL3 bindings and
+## imgui backend capabilities)
+
+### Step 1 — platform swap: sdl2 -> sdl3-bindgen-sys (lithon)
+
+Why: nixpkgs "SDL2" is sdl2-compat (SDL3 in a trenchcoat) that burned
+us twice (visualid hint read once at init; alpha FBConfig lying about
+depth). `sdl3-bindgen-sys` (Hackage 0.0.x, lithon project) is the
+complete generated SDL 3.4 binding with ABI assertions, GHC 9.10
+support, CI'd. Real SDL3 gives us:
+- `SDL_WINDOW_TRANSPARENT` — native ARGB windows; the GLX visualid
+  hack (`Homgb.GL.Visual`) is deleted;
+- window flags UTILITY/TOOLTIP/POPUP_MENU — SDL3's X11 backend sets
+  `_NET_WM_WINDOW_TYPE` natively where appropriate;
+- `SDL_PROP_WINDOW_X11_WINDOWID` — exact X11 window id per SDL window
+  (WMProps tags precisely, no PID scan);
+- dear-imgui's `DearImGui.SDL` module becomes unusable (it binds the
+  sdl2 package), so we compile upstream `imgui_impl_sdl3.cpp` (imgui
+  1.92.8 master) ourselves: vendored headers in `vendor/imgui`, a thin
+  `extern "C"` shim (`cbits/homgb-imgui-sdl3.cpp`) exposing
+  InitForOpenGL/NewFrame/ProcessEvent/Shutdown, linking imgui core
+  symbols from the dear-imgui library. The OpenGL3 renderer module
+  stays.
+
+Scope: single window, full parity with M3 (tray, popups, menus,
+layouts, transparency, EWMH props).
+
+### Step 2 — multi-window surfaces
+
+Original design decisions 1–5 below (one SDL window per surface,
+per-surface ImGui context, one shared GL context made current per
+frame, own input routing, EWMH per surface pre-map), now cleaner on
+real SDL3 (exact window ids, native window-type flags). dear-imgui
+fork adds ~6 Raw io bindings (Add*Event, display size, delta time).
+
+### Step 3 (only if step 2 hurts) — imgui docking branch
+
+Multi-viewport in imgui exists only in the docking branch (master
+backends, sdl2 AND sdl3, have no viewport support — verified in the
+vendored 1.92.8 sources). Escalation: fork dear-imgui onto the docking
+core, docking imgui_impl_sdl3 backend, custom PlatformIO renderer
+callbacks. Most machinery, most risk; defer.
+
+### Notification center panel
+
+After step 2 (needs its own surface): NotiCenter surface (DOCK),
+config section, toggle hotkey, lists persistent notifications,
+dismiss/clear-all.
+
 ## Why
 
 The single overlay (M1 shortcut) is now actively wrong:
