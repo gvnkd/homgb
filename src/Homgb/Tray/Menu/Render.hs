@@ -109,11 +109,13 @@ openItemMenu client menus info winSize =
 
 -- | Renders all visible menus (call once per frame, AFTER the tray
 -- window's end, so menu windows submit on top). Closes a menu on any
--- mouse press outside its window; button edges are detected by
--- sampling SDL state once per frame against the previous frame's.
-renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> IO ()
-renderMenus client menus prevButtons mDisplay = do
-  pressed <- samplePressEdge mDisplay prevButtons
+-- mouse press outside its window; presses are detected by polling
+-- XQueryPointer (root coordinates) once per frame — ImGui's own mouse
+-- position goes stale once the pointer leaves our surfaces.
+renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display
+            -> (Int, Int) -> IO ()
+renderMenus client menus prevButtons mDisplay winPos = do
+  (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
   now <- getPOSIXTime
@@ -143,7 +145,13 @@ renderMenus client menus prevButtons mDisplay = do
         -- press right after opening).
         let openedAgo = now - msOpenedAt st
         when (pressed && openedAgo > 0.25) $ do
-          inside <- mouseInRect rect
+          -- rect is tray-local (ImGui), pointer is root (XQueryPointer)
+          let (wx, wy) = winPos
+              (rx, ry, rw, rh) = rect
+              inside = fromIntegral rootX >= wx + floor rx
+                && fromIntegral rootX < wx + ceiling (rx + rw)
+                && fromIntegral rootY >= wy + floor ry
+                && fromIntegral rootY < wy + ceiling (ry + rh)
           unless inside $ closeMenu menus key
       end
   where
@@ -154,25 +162,20 @@ renderMenus client menus prevButtons mDisplay = do
       ImVec2 x y <- getWindowPos
       ImVec2 w h <- getWindowSize
       return (x, y, w, h)
-    mouseInRect (x, y, w, h) = do
-      ImVec2 mx my <- Raw.getMousePos
-      -- the SDL backend reports MousePos = -FLT_MAX when the pointer
-      -- leaves our window; a press then means a click on a foreign
-      -- window, i.e. definitively outside the menu
-      return (mx > -1.0e30 && my > -1.0e30
-                && mx >= x && mx < x + w && my >= y && my < y + h)
 
 -- | True if the left or right button went down since the last frame,
 -- polled globally via XQueryPointer (SDL misses clicks on other
--- windows). Nothing display -> no edge detection.
-samplePressEdge :: Maybe Display -> TVar (Bool, Bool) -> IO Bool
-samplePressEdge Nothing _ = return False
+-- windows); also returns the pointer's root position. Nothing display
+-- -> no edge detection.
+samplePressEdge :: Maybe Display -> TVar (Bool, Bool) -> IO (Bool, Int, Int)
+samplePressEdge Nothing _ = return (False, 0, 0)
 samplePressEdge (Just dpy) prevVar = do
-  (_, _, _, _, _, _, _, mask) <- queryPointer dpy (defaultRootWindow dpy)
+  (_, _, _, rx, ry, _, _, mask) <- queryPointer dpy (defaultRootWindow dpy)
   let cur = (mask .&. button1Mask /= 0, mask .&. button3Mask /= 0)
   prev <- readTVarIO prevVar
   atomically $ writeTVar prevVar cur
-  return (fst cur && not (fst prev) || snd cur && not (snd prev))
+  let pressed = fst cur && not (fst prev) || snd cur && not (snd prev)
+  return (pressed, fromIntegral rx, fromIntegral ry)
 
 -- | Renders one node; closes the menu (via 'closeMenu') when a leaf
 -- item is clicked.

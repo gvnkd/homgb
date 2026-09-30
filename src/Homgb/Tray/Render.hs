@@ -37,9 +37,12 @@ import Homgb.Tray.Menu.Render (openItemMenu, renderMenus)
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 
+-- | Draw the tray into the current (tray surface) ImGui context. The
+-- tray window sits at the surface's local origin; returns the measured
+-- content size so the caller can shrink-wrap the SDL window.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Maybe KeyboardEnv
-           -> Float -> Float -> IO ()
-renderTray env textures config kbEnv winW winH = do
+           -> ImVec2 -> (Int, Int) -> IO (Float, Float)
+renderTray env textures config kbEnv surfSize winPos = do
   state <- readTVarIO (trayState env)
   dbg0 <- lookupEnv "HOMGB_DEBUG"
   case dbg0 of
@@ -53,8 +56,8 @@ renderTray env textures config kbEnv winW winH = do
       iconSize = fromIntegral (configTrayIconSize config)
       traySpacing = fromIntegral (configTraySpacing config)
       btn = iconSize + 6
-      pos = trayPos (configTrayPosition config) winW winH
-      pivot = trayPivot (configTrayPosition config)
+      pos = ImVec2 0 0
+      pivot = ImVec2 0 0
       trayFlags = foldl1 combineFlags
         [ ImGuiWindowFlags_NoTitleBar
         , ImGuiWindowFlags_NoResize
@@ -74,16 +77,30 @@ renderTray env textures config kbEnv winW winH = do
     Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
   beginVisible <- BS.useAsCString "homgb-tray"
     $ \label -> Raw.begin label Nothing (Just trayFlags)
-  when beginVisible $ do
-    forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
-      when (idx > 0) Raw.sameLine
-      renderItem env textures config iconSize btn traySpacing idx item winW winH
-    renderIndicator kbEnv config (length items)
+  if beginVisible
+    then do
+      forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
+        when (idx > 0) Raw.sameLine
+        renderItem env textures config iconSize btn traySpacing idx item surfSize
+      renderIndicator kbEnv config (length items)
+      -- menus submit after the tray window so they draw on top of it
+      renderMenus (trayClient env) (trayMenus env) (trayPrevButtons env)
+        (trayDisplay env) winPos
+    else return ()
   end
   popStyleColor 1
-  -- menus submit after the tray window so they draw on top of it
-  renderMenus (trayClient env) (trayMenus env) (trayPrevButtons env)
-    (trayDisplay env)
+  -- Analytic size: ImGui windows are clipped to the host viewport
+  -- (the SDL window), so measuring inside the window feeds back and
+  -- collapses the window. Derive the content size from the layout
+  -- instead.
+  let n = length items
+      gaps = fromIntegral (max 0 (n - 1)) * traySpacing
+      kbWidth = case kbEnv of
+        Just _ | configKbIndicator config -> fromIntegral (configTrayIconSize config) + 8
+        _ -> 0
+      w = fromIntegral n * btn + gaps + kbWidth + 16
+      h = btn + 16
+  return (w, h)
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
 -- Clicking rotates layouts, same as the hotkey.
@@ -100,8 +117,8 @@ renderIndicator kbEnv config itemCount =
       when clicked $ rotateLayout kb
 
 renderItem :: TrayEnv -> TrayTextures -> Config -> Float -> Float -> Float
-           -> Int -> TrayItem -> Float -> Float -> IO ()
-renderItem env textures config _iconSize btn _traySpacing _idx item winW winH = do
+           -> Int -> TrayItem -> ImVec2 -> IO ()
+renderItem env textures config _iconSize btn _traySpacing _idx item surfSize = do
   let info = tiInfo item
       name = itemServiceName info
       path = itemServicePath info
@@ -148,7 +165,7 @@ renderItem env textures config _iconSize btn _traySpacing _idx item winW winH = 
       Just _ -> hPutStrLn stderr $ "tray right-click: " ++ show (coerce name :: String)
         ++ " menu=" ++ show (menuPath info)
       Nothing -> return ()
-    openItemMenu (trayClient env) (trayMenus env) info (ImVec2 winW winH)
+    openItemMenu (trayClient env) (trayMenus env) info surfSize
 
   setItemTooltip (T.pack (tooltipText info))
   where
@@ -199,20 +216,6 @@ trayTexture textures iconSz item = do
                  src ++ " " ++ show w ++ "x" ++ show h) mRgba
         Nothing -> return ()
       return mTex
-
-trayPos :: String -> Float -> Float -> ImVec2
-trayPos pos winW winH = case pos of
-  "top-left"     -> ImVec2 10 10
-  "bottom-left"  -> ImVec2 10 (winH - 10)
-  "bottom-right" -> ImVec2 (winW - 10) (winH - 10)
-  _              -> ImVec2 (winW - 10) 10
-
-trayPivot :: String -> ImVec2
-trayPivot pos = case pos of
-  "top-left"     -> ImVec2 0 0
-  "bottom-left"  -> ImVec2 0 1
-  "bottom-right" -> ImVec2 1 1
-  _              -> ImVec2 1 0
 
 withImVec2 :: ImVec2 -> (Ptr ImVec2 -> IO a) -> IO a
 withImVec2 v f = alloca $ \p -> poke p v >> f p

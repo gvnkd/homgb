@@ -11,6 +11,7 @@ module Homgb.Keyboard.Xcb
   , lockGroup
   , rulesLayouts
   , argbVisuals
+  , screenSize
   ) where
 
 import qualified Data.Text as T
@@ -35,6 +36,8 @@ foreign import ccall "homgb_xkb_lock_group" c_lock_group :: ConnPtr -> CUChar ->
 foreign import ccall "homgb_xkb_rules_layouts" c_rules :: ConnPtr -> IO CString
 foreign import ccall "homgb_argb_visuals" c_argb_visuals
   :: ConnPtr -> Ptr CInt -> IO (Ptr Word64)
+foreign import ccall "homgb_screen_size" c_screen_size
+  :: ConnPtr -> Ptr CInt -> Ptr CInt -> IO CInt
 
 -- | Open a connection to the X server and check the XKB extension.
 -- The connection is never disconnected; process exit cleans up.
@@ -75,6 +78,23 @@ rulesLayouts p = do
 
 -- | Depth-32 visual ids of screen 0 (candidates for a transparent
 -- window). Empty when X is unreachable or has no 32-bit visuals.
+-- | Screen size in pixels of screen 0, if X is reachable.
+screenSize :: IO (Maybe (Int, Int))
+screenSize = do
+  mConn <- connect
+  case mConn of
+    Nothing -> return Nothing
+    Just conn ->
+      alloca $ \wp ->
+        alloca $ \hp -> do
+          ok <- c_screen_size conn wp hp
+          if ok == 0
+            then return Nothing
+            else do
+              w <- peek wp
+              h <- peek hp
+              return (Just (fromIntegral w, fromIntegral h))
+
 argbVisuals :: IO [Word32]
 argbVisuals = do
   mConn <- connect

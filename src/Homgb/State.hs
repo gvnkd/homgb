@@ -8,6 +8,7 @@ import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 
 import Homgb.Keyboard (KeyboardEnv)
 import Homgb.Notifications.Daemon (NotifyState)
+import Homgb.Surface (Surfaces)
 import Homgb.Tray (TrayEnv)
 
 data AppState = AppState
@@ -18,10 +19,14 @@ data AppState = AppState
     -- ^ Last measured popup heights, keyed by notiId (stacking layout)
   , appTray :: TrayEnv
   , appKeyboard :: Maybe KeyboardEnv
+  , appSurfaces :: Surfaces
+  , appScreenSize :: (Int, Int)
+    -- ^ primary X screen size, for surface positioning
   }
 
-initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv -> IO AppState
-initialAppState tState tray kb = do
+initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
+                -> Surfaces -> (Int, Int) -> IO AppState
+initialAppState tState tray kb surfaces screenSize = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   return AppState
@@ -30,4 +35,6 @@ initialAppState tState tray kb = do
     , appHeights = heights
     , appTray = tray
     , appKeyboard = kb
+    , appSurfaces = surfaces
+    , appScreenSize = screenSize
     }

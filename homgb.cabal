@@ -19,6 +19,7 @@ library
                       , Homgb.WMProps
                       , Homgb.SDL3
                       , Homgb.ImGui.SDL3
+                      , Homgb.Surface
                      , Homgb.Notifications.Data
                      , Homgb.Notifications.Daemon
                      , Homgb.Tray

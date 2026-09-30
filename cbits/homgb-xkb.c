@@ -88,6 +88,49 @@ void homgb_ensure_sticky(Display *dpy, Window win) {
   }
 }
 
+/* Screen size in pixels of the first X screen (for surface
+ * positioning). Returns 1 on success. */
+int homgb_screen_size(void *conn_, int *w, int *h) {
+  xcb_connection_t *c = (xcb_connection_t *)conn_;
+  xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(c));
+  if (sit.rem < 1) return 0;
+  *w = sit.data->width_in_pixels;
+  *h = sit.data->height_in_pixels;
+  return 1;
+}
+
+/* Sets _NET_WM_WINDOW_TYPE from type_name (e.g.
+ * "_NET_WM_WINDOW_TYPE_DOCK"), plus SKIP_TASKBAR/PAGER and _NET_WM_PID;
+ * sticky desktop when sticky != 0. Used pre-map per surface window. */
+void homgb_set_window_type_props(Display *dpy, Window win,
+                                 const char *type_name, int sticky) {
+  Atom typeAtom = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+  Atom type = XInternAtom(dpy, type_name, False);
+  Atom stateAtom = XInternAtom(dpy, "_NET_WM_STATE", False);
+  Atom skipTaskbar = XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+  Atom skipPager = XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER", False);
+  Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
+  Atom pidAtom = XInternAtom(dpy, "_NET_WM_PID", False);
+  Atom atomType = XInternAtom(dpy, "ATOM", False);
+  long pid = (long)getpid();
+  unsigned int allDesktops = 0xFFFFFFFF;
+  Atom states[2];
+
+  XChangeProperty(dpy, win, typeAtom, atomType, 32, PropModeReplace,
+                  (unsigned char *)&type, 1);
+  states[0] = skipTaskbar;
+  states[1] = skipPager;
+  XChangeProperty(dpy, win, stateAtom, atomType, 32, PropModeReplace,
+                  (unsigned char *)states, 2);
+  XChangeProperty(dpy, win, pidAtom, XA_CARDINAL, 32, PropModeReplace,
+                  (unsigned char *)&pid, 1);
+  if (sticky) {
+    XChangeProperty(dpy, win, desktopAtom, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)&allDesktops, 1);
+  }
+  XFlush(dpy);
+}
+
 void *homgb_xcb_connect(void) {
   xcb_connection_t *c = xcb_connect(NULL, NULL);
   if (xcb_connection_has_error(c)) {

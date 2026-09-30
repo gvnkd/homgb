@@ -1,6 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Homgb.Render (renderFrame) where
+module Homgb.Render
+  ( frameUpkeep
+  , drawTraySurface
+  , drawPopupSurface
+  ) where
 
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM (atomically)
@@ -33,41 +37,92 @@ import Homgb.Notifications.Data
 import Homgb.SDL3 (Window)
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
+import Homgb.Surface
+  (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
+  , resizeSurfaceWindow, showSurface, surfaceWindowSize)
 import Homgb.Tray (trayTextures)
 import Homgb.Tray.Render (renderTray)
 
-renderFrame :: AppState -> Window -> IO ()
-renderFrame app window = do
-  V2 winW winH <- SDL3.windowSize window
+-- | Per-frame state maintenance: popup expiry (checked in the frame
+-- loop, no timeout threads), image texture uploads, cache pruning.
+frameUpkeep :: AppState -> IO ()
+frameUpkeep app = do
   let tState = appNotify app
   state <- readTVarIO tState
   let config = notiConfig state
       notis = notiStList state
-
   now <- getCurrentTime
-  -- Expiry is checked in the frame loop (design decision 2): no timeout
-  -- threads, no races.
   forM_ (filter (isExpired config now) notis) $ \noti ->
     closeNotiById tState (notiId noti) Timeout
-
   let liveIds = map notiId notis
   syncTextures app notis
   pruneCache app liveIds
 
-  heights <- readTVarIO (appHeights app)
-  let startY = fromIntegral (configDistanceTop config)
-  renderPopups app tState config (fromIntegral winW) startY heights notis
-  renderTray (appTray app) (trayTextures (appTray app)) config (appKeyboard app)
-    (fromIntegral winW) (fromIntegral winH)
+-- | Draw the tray surface and shrink-wrap/position its SDL window at
+-- the configured screen corner.
+drawTraySurface :: AppState -> IO ()
+drawTraySurface app = do
+  let surf = surfacesTray (appSurfaces app)
+  state <- readTVarIO (appNotify app)
+  let config = notiConfig state
+  V2 surfW surfH <- surfaceWindowSize surf
+  winPos <- SDL3.windowPosition (sWindow surf)
+  (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config
+    (appKeyboard app) (ImVec2 (fromIntegral surfW) (fromIntegral surfH)) winPos
+  let (sw, sh) = appScreenSize app
+      (x, y) = case configTrayPosition config of
+        "top-left" -> (10, 10)
+        "bottom-left" -> (10, sh - 10 - floor h)
+        "bottom-right" -> (sw - 10 - floor w, sh - 10 - floor h)
+        _ -> (sw - 10 - floor w, 10)
+  resizeSurfaceWindow surf (floor w + 2) (floor h + 2)
+  moveSurfaceWindow surf x y
   debug <- lookupEnv "HOMGB_DEBUG"
   case debug of
     Just _ -> hPutStrLn stderr
-      $ "win size=(" ++ show winW ++ "," ++ show winH ++ ")"
+      $ "tray surface=(" ++ show x ++ "," ++ show y ++ ") "
+        ++ show (floor w :: Int) ++ "x" ++ show (floor h :: Int)
     Nothing -> return ()
   metrics <- lookupEnv "HOMGB_METRICS"
   case metrics of
     Just _ -> Raw.showMetricsWindow
     Nothing -> return ()
+
+-- | Draw notification popups in their own surface window, placed at
+-- the configured top corner of the screen. The surface hides when no
+-- popups are live.
+drawPopupSurface :: AppState -> IO ()
+drawPopupSurface app = do
+  let surf = surfacesPopups (appSurfaces app)
+      tState = appNotify app
+  state <- readTVarIO tState
+  let config = notiConfig state
+      notis = notiStList state
+  if null notis
+    then hideSurface surf
+    else do
+      showSurface surf
+      heights <- readTVarIO (appHeights app)
+      let width = configWidthNoti config
+          startY = 2
+      total <- go tState config width startY heights notis
+      let (sw, _) = appScreenSize app
+          x = sw - configDistanceRight config - width - 2
+          y = configDistanceTop config
+      resizeSurfaceWindow surf (width + 4) (floor total + 4)
+      moveSurfaceWindow surf x y
+      debug <- lookupEnv "HOMGB_DEBUG"
+      case debug of
+        Just _ -> hPutStrLn stderr
+          $ "popup surface=(" ++ show x ++ "," ++ show y ++ ") h="
+            ++ show (floor total :: Int)
+        Nothing -> return ()
+  where
+    go _ _ _ py _ [] = return py
+    go tState config width py heights (n:rest) = do
+      h <- renderPopup app tState config py
+             (Map.findWithDefault (fallbackHeight config) (notiId n) heights) n
+      go tState config width (py + h + fromIntegral (configDistanceBetween config)) heights rest
 
 -- | deadd's timeout semantics (NotificationPopup.startTimeoutThread):
 --   0 = never expires, >0 = that many milliseconds, <0 = configured default.
@@ -79,23 +134,13 @@ isExpired config now noti =
       age = realToFrac (diffUTCTime now (notiCreatedAt noti)) * 1000 :: Double
   in timeout /= 0 && age > ms
 
-renderPopups :: AppState -> TVar NotifyState -> Config -> Float -> Float
-             -> Map.Map Int Float -> [Notification] -> IO ()
-renderPopups app tState config winW startY heights notis = go startY notis
-  where
-    -- newest first, stacked from the top down
-    go _ [] = return ()
-    go py (n:rest) = do
-      h <- renderPopup app tState config winW py
-                       (Map.findWithDefault (fallbackHeight config) (notiId n) heights) n
-      go (py + h + fromIntegral (configDistanceBetween config)) rest
-
-renderPopup :: AppState -> TVar NotifyState -> Config -> Float -> Float -> Float
+-- | Draw one popup at local x=2 (the surface window hugs the popup
+-- stack, so no window-width math is needed here).
+renderPopup :: AppState -> TVar NotifyState -> Config -> Float -> Float
             -> Notification -> IO Float
-renderPopup app tState config winW top heightGuess noti = do
+renderPopup app tState config top heightGuess noti = do
   let width = fromIntegral (configWidthNoti config)
-      right = fromIntegral $ maybe (configDistanceRight config) id (notiRight noti)
-      popupX = winW - right - width
+      popupX = 2
       popupFlags = foldl1 combineFlags
         [ ImGuiWindowFlags_NoTitleBar
         , ImGuiWindowFlags_NoResize
@@ -168,7 +213,7 @@ renderPopup app tState config winW top heightGuess noti = do
       case debug of
         Just _ -> hPutStrLn stderr
           $ "popup " ++ show (notiId noti) ++ " pos=(" ++ show popupX ++ "," ++ show top
-            ++ ") h=" ++ show h ++ " winW=" ++ show winW
+            ++ ") h=" ++ show h
         Nothing -> return ()
       hFlush stderr
       return h'

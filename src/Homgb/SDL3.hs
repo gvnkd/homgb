@@ -12,10 +12,12 @@ module Homgb.SDL3
   , Window
   , GLContext
   , createMainWindow
+  , createSurfaceWindow
   , destroyWindow
   , showWindow
   , hideWindow
   , setWindowPosition
+  , windowPosition
   , windowSize
   , createGLContext
   , glContextPtr
@@ -28,12 +30,14 @@ module Homgb.SDL3
 import Control.Monad (unless, when)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
+import DearImGui (Context)
+import qualified DearImGui.Raw as Raw (setCurrentContext)
 import Foreign.C.ConstPtr (ConstPtr(..))
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, peekByteOff)
 import Linear (V2(..))
 import System.Exit (exitFailure)
 
@@ -45,8 +49,8 @@ import SDL3.Sys.Events
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
 import SDL3.Sys.Properties (SDL_PropertiesID(..), getNumberProperty)
 import qualified SDL3.Sys.Video as RawVideo
-  (glCreateContext, glMakeCurrent, glSwapWindow, getWindowSize
-  , hideWindow, setWindowPosition, showWindow)
+  (glCreateContext, glMakeCurrent, glSwapWindow, getWindowPosition
+  , getWindowSize, hideWindow, setWindowPosition, showWindow)
 import SDL3.Sys.Video
   ( SDL_GLContext(..)
   , SDL_Window
@@ -79,9 +83,14 @@ quitVideo = quit
 -- | Borderless, transparent, hidden. Shown by the caller AFTER EWMH
 -- props are set (WMs read them at manage time).
 createMainWindow :: IO Window
-createMainWindow =
+createMainWindow = createSurfaceWindow 500 700
+
+-- | Hidden borderless transparent OpenGL window. Caller positions,
+-- tags, shows.
+createSurfaceWindow :: Int -> Int -> IO Window
+createSurfaceWindow w h =
   withCString "homgb" $ \title ->
-    createWindow (ConstPtr title) 500 700 flags
+    createWindow (ConstPtr title) (i32 w) (i32 h) flags
   where
     flags =
       SDL_WINDOW_OPENGL
@@ -97,6 +106,14 @@ hideWindow w = void' (RawVideo.hideWindow w)
 
 setWindowPosition :: Window -> Int -> Int -> IO ()
 setWindowPosition w x y = void' (RawVideo.setWindowPosition w (i32 x) (i32 y))
+
+windowPosition :: Window -> IO (Int, Int)
+windowPosition w =
+  alloca $ \xp ->
+    alloca $ \yp -> do
+      ok <- RawVideo.getWindowPosition w xp yp
+      unless ok dieSDL
+      (,) <$> (fromIntegral <$> peek xp) <*> (fromIntegral <$> peek yp)
 
 windowSize :: Window -> IO (V2 Int)
 windowSize w =
@@ -120,19 +137,31 @@ makeCurrent w ctx = do
 swapWindow :: Window -> IO ()
 swapWindow w = void' (RawVideo.glSwapWindow w)
 
--- | Drain the SDL event queue for this frame: every event is handed to
--- the imgui backend. True if a quit event was seen.
-pumpEvents :: IO Bool
-pumpEvents = alloca @SDL_Event $ \ev -> drain ev False
+-- | Drain the SDL event queue for this frame. Each event is routed to
+-- the ImGui context of its target window (by SDL_WindowID, the third
+-- member of every window-targeted event struct) and handed to the
+-- imgui backend under that context. Events with an unknown window id
+-- are dropped (ImGui would ignore them anyway). True on SDL_EVENT_QUIT.
+pumpEvents :: [(Word32, Context)] -> IO Bool
+pumpEvents routes = alloca @SDL_Event $ \ev -> drain ev False
   where
     drain ev sawQuit = do
       pending <- pollEvent ev
       if not pending
         then return sawQuit
         else do
-          _ <- processEvent (castPtr ev)
           evType <- peek (castPtr ev :: Ptr SDL_EventType)
-          drain ev (sawQuit || evType == SDL_EVENT_QUIT)
+          if evType == SDL_EVENT_QUIT
+            then drain ev True
+            else do
+              wid <- peekByteOff ev 16
+              case lookup (wid :: Word32) routes of
+                Just ctx -> do
+                  Raw.setCurrentContext ctx
+                  _ <- processEvent (castPtr ev)
+                  return ()
+                Nothing -> return ()
+              drain ev sawQuit
 
 -- | X11 window id of the SDL window (for EWMH tagging), if running on
 -- X11.
