@@ -17,6 +17,7 @@ library
                      , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.GL.Visual
+                      , Homgb.WMProps
                      , Homgb.Notifications.Data
                      , Homgb.Notifications.Daemon
                      , Homgb.Tray
@@ -55,7 +56,7 @@ library
                      , haskell-gettext
                      , lens
   c-sources:           cbits/homgb-xkb.c
-  pkgconfig-depends:   xcb, xcb-xkb, gl
+  pkgconfig-depends:   xcb, xcb-xkb, gl, x11
   default-language:    Haskell2010
   ghc-options:         -Wall -Wcompat -Wredundant-constraints
 

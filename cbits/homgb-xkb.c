@@ -5,9 +5,89 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <GL/glx.h>
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <xcb/xcb.h>
 #include <xcb/xkb.h>
+
+/* Finds the top-level window of this process on the given root
+ * (SDL sets _NET_WM_PID) and tags it with EWMH properties so WMs
+ * treat it as a dock/panel surface: _NET_WM_WINDOW_TYPE=DOCK,
+ * SKIP_TASKBAR|PAGER, sticky desktop, _NET_WM_PID. */
+Window homgb_find_window_by_pid(Display *dpy, Window root, long pid) {
+  Window root_ret, parent, *kids = NULL;
+  unsigned int n = 0;
+  Atom pidAtom = XInternAtom(dpy, "_NET_WM_PID", True);
+  if (pidAtom == None) return None;
+  if (!XQueryTree(dpy, root, &root_ret, &parent, &kids, &n)) return None;
+  Window found = None;
+  for (unsigned i = 0; i < n && !found; i++) {
+    Atom type = None;
+    int fmt = 0;
+    unsigned long nitems = 0, bytes = 0;
+    unsigned char *prop = NULL;
+    if (XGetWindowProperty(dpy, kids[i], pidAtom, 0, 1, False,
+                           XA_CARDINAL, &type, &fmt, &nitems, &bytes,
+                           &prop) == Success && prop) {
+      if (nitems >= 1 && fmt == 32 && *(long *)prop == pid) found = kids[i];
+      XFree(prop);
+    }
+  }
+  if (kids) XFree(kids);
+  return found;
+}
+
+void homgb_set_dock_props(Display *dpy, Window win) {
+  Atom typeAtom = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+  Atom dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+  Atom stateAtom = XInternAtom(dpy, "_NET_WM_STATE", False);
+  Atom skipTaskbar = XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+  Atom skipPager = XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER", False);
+  Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
+  Atom pidAtom = XInternAtom(dpy, "_NET_WM_PID", False);
+  Atom atomType = XInternAtom(dpy, "ATOM", False);
+  long pid = (long)getpid();
+  unsigned int allDesktops = 0xFFFFFFFF; /* sticky */
+  Atom states[2];
+
+  XChangeProperty(dpy, win, typeAtom, atomType, 32, PropModeReplace,
+                  (unsigned char *)&dock, 1);
+  states[0] = skipTaskbar;
+  states[1] = skipPager;
+  XChangeProperty(dpy, win, stateAtom, atomType, 32, PropModeReplace,
+                  (unsigned char *)states, 2);
+  XChangeProperty(dpy, win, desktopAtom, XA_CARDINAL, 32, PropModeReplace,
+                  (unsigned char *)&allDesktops, 1);
+  XChangeProperty(dpy, win, pidAtom, XA_CARDINAL, 32, PropModeReplace,
+                  (unsigned char *)&pid, 1);
+  XFlush(dpy);
+}
+
+/* Re-asserts _NET_WM_DESKTOP=0xFFFFFFFF if the WM overwrote it (WMs
+ * assign a desktop when they adopt the window, racing the initial
+ * property set). Called periodically from a dedicated display. */
+void homgb_ensure_sticky(Display *dpy, Window win) {
+  Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", True);
+  if (desktopAtom == None) return;
+  Atom type = None;
+  int fmt = 0;
+  unsigned long nitems = 0, bytes = 0;
+  unsigned char *prop = NULL;
+  int ok = XGetWindowProperty(dpy, win, desktopAtom, 0, 1, False,
+                              XA_CARDINAL, &type, &fmt, &nitems, &bytes,
+                              &prop);
+  int sticky = (ok == Success && prop && nitems >= 1
+                && *(unsigned long *)prop == 0xFFFFFFFFUL);
+  if (prop) XFree(prop);
+  if (!sticky) {
+    unsigned int allDesktops = 0xFFFFFFFF;
+    XChangeProperty(dpy, win, desktopAtom, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)&allDesktops, 1);
+    XFlush(dpy);
+  }
+}
 
 /* Picks a depth-32 ARGB visual usable for a transparent GL window, or
  * -1 if none. Preferred: an FB config with 8-bit alpha whose X visual

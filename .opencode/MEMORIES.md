@@ -137,6 +137,18 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   hardcode (0x7a works here, 0x23 BadMatches).
 - Without a compositor an ARGB window renders black — same as before,
   acceptable.
+- WM properties (Homgb.WMProps, C shim): homgb's single SDL window is
+  tagged _NET_WM_WINDOW_TYPE=DOCK + SKIP_TASKBAR/PAGER +
+  _NET_WM_DESKTOP=0xFFFFFFFF, found by _NET_WM_PID (SDL sets it).
+  CRITICAL: the props must be set BEFORE the window maps — xmonad's
+  ManageDocks reads _NET_WM_WINDOW_TYPE at manage time; setting it
+  after mapping leaves the xmonad border drawn. Window is created with
+  windowVisible=False, tagged, then showWindow (Homgb.run). Separately,
+  WMs overwrite _NET_WM_DESKTOP when adopting the window, so a
+  background thread on its OWN X display re-asserts it every 2s (Xlib
+  displays are not thread-safe; render thread already polls via
+  trayDisplay). Per-surface types (NOTIFICATION/POPUP_MENU) need
+  separate X windows per surface — M4 multi-window refactor.
 - The Haskell `X11` package builds against system libs; they are in the flake.
   Building `X11` from a git checkout additionally needs autoreconf — use the
   Hackage tarball.

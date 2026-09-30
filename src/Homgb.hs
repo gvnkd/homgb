@@ -27,7 +27,8 @@ import Homgb.Keyboard (startKeyboard)
 import Homgb.Notifications.Daemon (startNotificationDaemon)
 import Homgb.Render
 import Homgb.State
-import Homgb.Tray (startTray)
+import Homgb.Tray (TrayEnv(..), startTray)
+import Homgb.WMProps (setWindowProperties)
 
 run :: IO ()
 run = do
@@ -47,6 +48,8 @@ run = do
   kb <- startKeyboard config
   app <- initialAppState tState tray kb
   window <- createMainWindow
+  forM_ (trayDisplay tray) setWindowProperties
+  showWindow window
   runManaged $ do
     glContext <- managed $ bracket (glCreateContext window) glDeleteContext
     _ <- managed $ bracket createContext destroyContext
@@ -67,6 +70,10 @@ createMainWindow =
   createWindow "homgb" defaultWindow
     { windowBorder = False
     , windowResizable = False
+    -- hidden at first: EWMH props (_NET_WM_WINDOW_TYPE=DOCK) must be
+    -- set BEFORE the window maps — WMs read them at manage time and
+    -- xmonad's ManageDocks skips borders only for pre-tagged docks
+    , windowVisible = False
     , windowInitialSize = V2 500 700
     , windowPosition = Absolute (P (V2 80 60))
     , windowGraphicsContext = OpenGLContext defaultOpenGL
