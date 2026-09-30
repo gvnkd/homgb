@@ -33,6 +33,7 @@ import System.IO (hPutStrLn, hFlush, stderr)
 
 import Graphics.X11.Xlib (Display)
 import Graphics.X11.Xlib.Display (openDisplay, defaultRootWindow)
+import Graphics.X11.Xlib.Types (Display(..))
 import Graphics.X11.Xlib.Event (allocaXEvent, nextEvent, get_EventType)
 import Graphics.X11.Xlib.Misc (grabKey, keysymToKeycode, stringToKeysym)
 import Graphics.X11.Types
@@ -136,6 +137,12 @@ pollGroup kb = do
 
 -- | @"ctrl-shift-space"@ -> (keysym, modifier mask). One grab per
 -- exact modifier combination; no anyModifier (steals keys from apps).
+-- Xlib's default error handler exits the process on any X error;
+-- install ours so a failed grab (combo taken, e.g. by another homgb)
+-- logs and leaves the app running without the hotkey.
+foreign import ccall "homgb_x_ignore_errors" c_ignore_errors
+  :: Display -> IO ()
+
 startGrab :: Config -> KeyboardEnv -> IO ()
 startGrab config kb =
   case parseHotkey (configKbHotkey config) of
@@ -143,6 +150,7 @@ startGrab config kb =
       hPutStrLn stderr $ "keyboard: bad hotkey " ++ show (configKbHotkey config)
     Just (keysym, mods) -> do
       dpy <- openDisplay ""
+      c_ignore_errors dpy
       let root = defaultRootWindow dpy
       keycode <- keysymToKeycode dpy keysym
       if keycode == 0

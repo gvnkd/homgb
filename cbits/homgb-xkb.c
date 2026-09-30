@@ -3,6 +3,7 @@
  * Hides libxcb reply struct layouts from the Haskell FFI layer.
  * Connection is opaque (void *) on the Haskell side.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -86,6 +87,22 @@ void homgb_ensure_sticky(Display *dpy, Window win) {
                     PropModeReplace, (unsigned char *)&allDesktops, 1);
     XFlush(dpy);
   }
+}
+
+/* Xlib's default error handler prints and EXITS the process - a
+ * failed XGrabKey (combo already grabbed, e.g. by a second homgb
+ * instance) would kill the app. Install this handler instead: log
+ * and continue. */
+static int homgb_x_error_handler(Display *dpy, XErrorEvent *ev) {
+  char buf[256];
+  XGetErrorText(dpy, ev->error_code, buf, sizeof(buf));
+  fprintf(stderr, "homgb: X error ignored: %s (request code %d)\n",
+          buf, ev->request_code);
+  return 0;
+}
+
+void homgb_x_ignore_errors(Display *dpy) {
+  XSetErrorHandler(homgb_x_error_handler);
 }
 
 /* Direct map/unmap: SDL_ShowWindow/HideWindow turned out unreliable
