@@ -118,6 +118,7 @@ renderItem :: TrayEnv -> TrayTextures -> Config -> Float -> Float -> Float
            -> Int -> TrayItem -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
 renderItem env textures config _iconSize btn _traySpacing _idx item surfSize
            winPos screenSize = do
+  let ImVec2 _surfW surfH = surfSize
   let info = tiInfo item
       name = itemServiceName info
       path = itemServicePath info
@@ -164,7 +165,8 @@ renderItem env textures config _iconSize btn _traySpacing _idx item surfSize
       Just _ -> hPutStrLn stderr $ "tray right-click: " ++ show (coerce name :: String)
         ++ " menu=" ++ show (menuPath info)
       Nothing -> return ()
-    openItemMenu (trayClient env) (trayMenus env) info winPos screenSize
+    openItemMenu (trayClient env) (trayMenus env) info winPos
+      (floor surfH) screenSize
 
   setItemTooltip (T.pack (tooltipText info))
   where

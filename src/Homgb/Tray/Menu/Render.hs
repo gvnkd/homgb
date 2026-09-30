@@ -70,20 +70,21 @@ menuKey info = case itemServiceName info of
 
 -- | Called on right-click: toggles the menu. The menu lives on its
 -- own surface window (EWMH POPUP_MENU), so the stored position is in
--- ROOT screen coordinates: tray-local mouse position plus the tray
--- window origin, clamped inside the screen.
-openItemMenu :: Client -> Menus -> ItemInfo -> (Int, Int) -> (Int, Int) -> IO ()
-openItemMenu client menus info trayWinPos screenSize =
+-- ROOT screen coordinates. It opens BELOW the tray row (like GTK/Qt
+-- tray menus), horizontally anchored at the cursor, clamped inside
+-- the screen.
+openItemMenu :: Client -> Menus -> ItemInfo -> (Int, Int) -> Int -> (Int, Int) -> IO ()
+openItemMenu client menus info trayWinPos trayH screenSize =
   case menuPath info of
     Nothing -> return ()
     Just path -> do
       let key = menuKey info
-      ImVec2 mx my <- Raw.getMousePos
+      ImVec2 mx _ <- Raw.getMousePos
       now <- getPOSIXTime
       let (wx, wy) = trayWinPos
           (sw, sh) = screenSize
           rx = min (max 0 (floor mx + wx)) (sw - 60)
-          ry = min (max 0 (floor my + wy)) (sh - 40)
+          ry = wy + trayH + 2
           pos = ImVec2 (fromIntegral rx) (fromIntegral ry)
       nowVisible <- atomically $ do
         m <- readTVar menus
@@ -150,42 +151,36 @@ renderMenus client menus prevButtons mDisplay winPos = do
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
         -- opaque bg + border: the default semi-transparent border
         -- shimmers on ARGB windows under a compositor
-        frame <- withImVec4 (ImVec4 0.13 0.14 0.15 1.0) $ \bgPtr ->
-          withImVec4 (ImVec4 0.35 0.36 0.40 1.0) $ \borderPtr -> do
-            Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
-            Raw.pushStyleColor ImGuiCol_Border borderPtr
-            beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
-              $ \label -> Raw.begin label Nothing (Just menuFlags)
-            mRect <- if beginVisible
-              then do
-                rect <- windowRect
-                -- The root node (id 0) is virtual and may itself claim
-                -- "children-display: submenu" (steam does) - flatten.
-                forM_ (msTree st) $ \tree ->
-                  forM_ (lnChildren tree) $
-                    renderNode client menus key path info
-                -- Ignore the press that opened this menu (same frame /
-                -- fresh press right after opening).
-                let openedAgo = now - msOpenedAt st
-                when (pressed && openedAgo > 0.25) $ do
-                  -- rect is menu-surface-local, pointer is root (XQueryPointer)
-                  let (wx, wy) = winPos
-                      (rx, ry, rw, rh) = rect
-                      inside = fromIntegral rootX >= wx + floor rx
-                        && fromIntegral rootX < wx + ceiling (rx + rw)
-                        && fromIntegral rootY >= wy + floor ry
-                        && fromIntegral rootY < wy + ceiling (ry + rh)
-                  unless inside $ closeMenu menus key
-                return (Just rect)
-              else return Nothing
-            end
-            popStyleColor 2
-            let ImVec2 px py = msPos st
-                size = case mRect of
-                  Just (_, _, rw, rh) -> (rw, rh)
-                  Nothing -> (0, 0)
-            return (MenuFrame key (px, py) size <$ mRect)
-        return frame
+        beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
+          $ \label -> Raw.begin label Nothing (Just menuFlags)
+        mRect <- if beginVisible
+          then do
+            rect <- windowRect
+            -- The root node (id 0) is virtual and may itself claim
+            -- "children-display: submenu" (steam does) - flatten.
+            forM_ (msTree st) $ \tree ->
+              forM_ (lnChildren tree) $
+                renderNode client menus key path info
+            -- Ignore the press that opened this menu (same frame /
+            -- fresh press right after opening).
+            let openedAgo = now - msOpenedAt st
+            when (pressed && openedAgo > 0.25) $ do
+              -- rect is menu-surface-local, pointer is root (XQueryPointer)
+              let (wx, wy) = winPos
+                  (rx, ry, rw, rh) = rect
+                  inside = fromIntegral rootX >= wx + floor rx
+                    && fromIntegral rootX < wx + ceiling (rx + rw)
+                    && fromIntegral rootY >= wy + floor ry
+                    && fromIntegral rootY < wy + ceiling (ry + rh)
+              unless inside $ closeMenu menus key
+            return (Just rect)
+          else return Nothing
+        end
+        let ImVec2 px py = msPos st
+            size = case mRect of
+              Just (_, _, rw, rh) -> (rw, rh)
+              Nothing -> (0, 0)
+        return (MenuFrame key (px, py) size <$ mRect)
       else return Nothing
   return (listToMaybe (catMaybes frames))
   where
@@ -223,7 +218,7 @@ renderNode client menus key path info node
       -- beginMenu is unreliable outside menu bars in this ImGui version;
       -- render submenu headers as non-clickable labels with indented
       -- children (dbusmenu submenus are rare in tray menus).
-      textDisabled (menuItemLabel node)
+      textDisabled (stripMnemonic (menuItemLabel node))
       forM_ (lnChildren node) $ \child -> do
         indent 14
         renderNode client menus key path info child
@@ -254,9 +249,16 @@ type MenusMap = Map.Map String (ItemInfo, ObjectPath, MenuState)
 toggleLabel :: LayoutNode -> T.Text
 toggleLabel node =
   case menuItemToggleState node of
-    Just 1 -> "[x] " <> menuItemLabel node
-    Just 0 -> "[ ] " <> menuItemLabel node
-    _ -> menuItemLabel node
+    Just 1 -> "[x] " <> label
+    Just 0 -> "[ ] " <> label
+    _ -> label
+  where
+    label = stripMnemonic (menuItemLabel node)
+
+-- dbusmenu labels carry '_' mnemonic markers (like GTK/Qt); ImGui
+-- renders them literally, so strip ("Send _Files" -> "Send Files").
+stripMnemonic :: T.Text -> T.Text
+stripMnemonic = T.filter (/= '_')
 
 fetchLayout :: Client -> Menus -> String -> IO ()
 fetchLayout client menus key = do
