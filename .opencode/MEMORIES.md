@@ -171,6 +171,20 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - Tray shrink-wrap: NEVER measure inside the ImGui window (viewport
   clips to the SDL window -> feedback collapse to minimum size);
   compute content size analytically (items*btn + spacing + indicator).
+- **One GLX context CANNOT be switched between SDL windows**: it
+  presents only on the window it was created on (blue-clear probe
+  showed nothing on the second window). Each surface owns its GL
+  context; no sharing needed because popup textures upload/delete
+  under the popup context (syncTextures/pruneCache run inside
+  drawPopupSurface).
+- Surface visibility needs BOTH SDL_ShowWindow/HideWindow (SDL state:
+  SwapWindow no-ops on SDL-hidden windows, and SwapWindow MAPS hidden
+  windows) AND XMapWindow/XUnmapWindow (SDL ShowWindow returned True
+  but the window stayed withdrawn). XMap/Unmap via C shim
+  homgb_x_map/unmap (the Haskell X11 package doesn't bind them).
+- Fresh X session => XAUTHORITY cookie changes (env-wrap caches the
+  old one in direnv): export XAUTHORITY=/run/user/1000/xauth_* from
+  the xmonad process environ before env-wrap.
 - Wayland session (Plasma): SDL3 uses the Wayland backend by default —
   no X11 windows, x11WindowId = Nothing, EWMH dead, XGrabKey/xcb only
   see XWayland. Run with SDL_VIDEODRIVER=x11 to stay an X client
