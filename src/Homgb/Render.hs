@@ -40,11 +40,14 @@ import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
   , resizeSurfaceWindow, showSurface, surfaceWindowSize)
-import Homgb.Tray (trayTextures)
+import Homgb.Tray (TrayEnv(..), trayTextures)
 import Homgb.Tray.Render (renderTray)
 
 -- | Per-frame state maintenance: popup expiry (checked in the frame
--- loop, no timeout threads), image texture uploads, cache pruning.
+-- loop, no timeout threads). Texture uploads/pruning happen in
+-- drawPopupSurface instead: GL contexts are per-surface and unshared,
+-- so popup image textures must be created/deleted under the popup
+-- context.
 frameUpkeep :: AppState -> IO ()
 frameUpkeep app = do
   let tState = appNotify app
@@ -54,9 +57,6 @@ frameUpkeep app = do
   now <- getCurrentTime
   forM_ (filter (isExpired config now) notis) $ \noti ->
     closeNotiById tState (notiId noti) Timeout
-  let liveIds = map notiId notis
-  syncTextures app notis
-  pruneCache app liveIds
 
 -- | Draw the tray surface and shrink-wrap/position its SDL window at
 -- the configured screen corner.
@@ -95,13 +95,16 @@ drawPopupSurface :: AppState -> IO ()
 drawPopupSurface app = do
   let surf = surfacesPopups (appSurfaces app)
       tState = appNotify app
+      mDpy = trayDisplay (appTray app)
   state <- readTVarIO tState
   let config = notiConfig state
       notis = notiStList state
   if null notis
-    then hideSurface surf
+    then forM_ mDpy $ \dpy -> hideSurface dpy surf
     else do
-      showSurface surf
+      forM_ mDpy $ \dpy -> showSurface dpy surf
+      syncTextures app notis
+      pruneCache app (map notiId notis)
       heights <- readTVarIO (appHeights app)
       let width = configWidthNoti config
           startY = 2

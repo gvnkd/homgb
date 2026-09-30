@@ -43,37 +43,31 @@ run = do
   kb <- startKeyboard config
   screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
   traySurf <- createSurface "homgb-tray" (V2 500 80)
-  glContext <- SDL3.createGLContext (sWindow traySurf)
   popSurf <- createSurface "homgb-popups" (V2 340 200)
-  SDL3.hideWindow (sWindow popSurf)
-  SDL3.makeCurrent (sWindow traySurf) glContext
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
     tagSurface dpy popSurf WmNotification
-  mapM_ (initSurfaceBackend (SDL3.glContextPtr glContext)) [traySurf, popSurf]
-  -- making a GL context current maps the window on some SDL
-  -- backends; re-hide surfaces that start hidden
+  mapM_ initSurfaceBackend [traySurf, popSurf]
+  -- making a GL context current maps a hidden SDL window; the
+  -- popup surface starts hidden (skip-draw while no popups live)
   SDL3.hideWindow (sWindow popSurf)
   app <- initialAppState tState tray kb (Surfaces traySurf popSurf) screen
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface
-    let withCtx = withSurfaceContext glContext
     managed_ $ bracket_
-      (mapM_ (withCtx (void openGL3Init)) [traySurf, popSurf])
-      (mapM_ (withCtx openGL3Shutdown) [popSurf, traySurf])
+      (mapM_ (withSurfaceContext (void openGL3Init)) [traySurf, popSurf])
+      (mapM_ (withSurfaceContext openGL3Shutdown) [popSurf, traySurf])
     liftIO $ do
-      -- making the GL context current maps a hidden SDL window; the
-      -- popup surface starts hidden (skip-draw while no popups live)
       SDL3.hideWindow (sWindow popSurf)
-      showSurface traySurf
-      mainLoop app glContext
+      forM_ (trayDisplay tray) $ \dpy -> showSurface dpy traySurf
+      mainLoop app
   SDL3.quitVideo
 
-withSurfaceContext :: GLContext -> IO () -> Surface -> IO ()
-withSurfaceContext glContext action surf = do
-  SDL3.makeCurrent (sWindow surf) glContext
+withSurfaceContext :: IO () -> Surface -> IO ()
+withSurfaceContext action surf = do
+  SDL3.makeCurrent (sWindow surf) (sGLContext surf)
   Raw.setCurrentContext (sContext surf)
   action
 
@@ -85,26 +79,27 @@ loadConfig = do
     then getConfig =<< T.readFile path
     else getConfig defaultConfigText
 
-mainLoop :: AppState -> GLContext -> IO ()
-mainLoop app glContext = do
+mainLoop :: AppState -> IO ()
+mainLoop app = do
   shouldQuit <- SDL3.pumpEvents (eventRoutes app)
   unless shouldQuit $ do
     frameUpkeep app
-    drawOn glContext (surfacesTray (appSurfaces app)) (drawTraySurface app)
+    drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
     -- swapWindow on a hidden SDL window maps it, so the popup surface
     -- must be skipped entirely (not just drawn-and-hidden) while no
     -- popups are live
     popCount <- length . notiStList <$> readTVarIO (appNotify app)
     if popCount == 0
-      then hideSurface (surfacesPopups (appSurfaces app))
-      else drawOn glContext (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
-    mainLoop app glContext
+      then forM_ (trayDisplay (appTray app)) $ \dpy ->
+             hideSurface dpy (surfacesPopups (appSurfaces app))
+      else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+    mainLoop app
 
--- One shared GL context, made current per surface; the matching ImGui
--- context is selected alongside it.
-drawOn :: GLContext -> Surface -> IO () -> IO ()
-drawOn glContext surf draw = do
-  SDL3.makeCurrent (sWindow surf) glContext
+-- Each surface draws with its own ImGui and GL context (a GLX context
+-- switched between SDL windows presents on only one of them).
+drawOn :: Surface -> IO () -> IO ()
+drawOn surf draw = do
+  SDL3.makeCurrent (sWindow surf) (sGLContext surf)
   Raw.setCurrentContext (sContext surf)
   openGL3NewFrame
   ImGuiSdl3.newFrame

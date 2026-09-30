@@ -94,16 +94,22 @@ startKeyboard config = do
 rotateLayout :: KeyboardEnv -> IO ()
 rotateLayout kb = do
   s <- readTVarIO (kbState kb)
-  case lsLayouts s of
+  -- refresh the layout list: the rotation list is fetched at startup,
+  -- but the user may change layouts (setxkbmap) while homgb runs
+  mNames <- Xcb.rulesLayouts (kbSwitchConn kb)
+  let layouts = case mNames of
+        Just ns@(_:_) -> ns
+        _ -> lsLayouts s
+  case layouts of
     [] -> hPutStrLn stderr "keyboard: no layouts known, cannot rotate"
-    layouts -> do
+    _ -> do
       let next = (lsGroup s + 1) `mod` length layouts
       ok <- Xcb.lockGroup (kbSwitchConn kb) next
       if ok
         then do
           now <- getCurrentTime
           atomically $ modifyTVar' (kbState kb) $ \st ->
-            st { lsGroup = next, lsQueriedAt = now }
+            st { lsLayouts = layouts, lsGroup = next, lsQueriedAt = now }
           debugLn $ "keyboard: group -> " ++ show next
         else hPutStrLn stderr "keyboard: xcb lock group failed"
 

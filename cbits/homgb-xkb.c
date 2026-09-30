@@ -88,6 +88,19 @@ void homgb_ensure_sticky(Display *dpy, Window win) {
   }
 }
 
+/* Direct map/unmap: SDL_ShowWindow/HideWindow turned out unreliable
+ * for surfaces that toggle visibility (reported success, stayed
+ * withdrawn). */
+void homgb_x_map(Display *dpy, Window win) {
+  XMapWindow(dpy, win);
+  XFlush(dpy);
+}
+
+void homgb_x_unmap(Display *dpy, Window win) {
+  XUnmapWindow(dpy, win);
+  XFlush(dpy);
+}
+
 /* Screen size in pixels of the first X screen (for surface
  * positioning). Returns 1 on success. */
 int homgb_screen_size(void *conn_, int *w, int *h) {
