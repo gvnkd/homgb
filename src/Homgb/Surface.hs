@@ -54,6 +54,8 @@ data Surface = Surface
   , sWindowId :: Word32
     -- ^ SDL_WindowID for event routing
   , sShown :: TVar Bool
+  , sLastPos :: TVar (Maybe (Int, Int))
+  , sLastSize :: TVar (Maybe (Int, Int))
   }
 
 data Surfaces = Surfaces
@@ -73,6 +75,8 @@ createSurface name (V2 w h) = do
   glCtx <- SDL3.createGLContext window
   ctx <- Raw.createContext
   shown <- newTVarIO False
+  lastPos <- newTVarIO Nothing
+  lastSize <- newTVarIO Nothing
   return Surface
     { sName = name
     , sWindow = window
@@ -80,6 +84,8 @@ createSurface name (V2 w h) = do
     , sGLContext = glCtx
     , sWindowId = wid
     , sShown = shown
+    , sLastPos = lastPos
+    , sLastSize = lastSize
     }
 
 -- | Tag with EWMH props; call BEFORE the window is mapped.
@@ -134,12 +140,23 @@ hideSurface dpy surf = do
 surfaceShown :: Surface -> IO Bool
 surfaceShown = readTVarIO . sShown
 
+-- | Configure calls are suppressed when nothing changed: repeated
+-- XMove/XResize make xmonad restack/refocus the window every frame
+-- (observed as a flickering WM border and occlusion of the menu by
+-- the tray surface).
 resizeSurfaceWindow :: Surface -> Int -> Int -> IO ()
-resizeSurfaceWindow surf w h =
-  void' (setWindowSize (sWindow surf) (fromIntegral w) (fromIntegral h))
+resizeSurfaceWindow surf w h = do
+  last <- readTVarIO (sLastSize surf)
+  when (last /= Just (w, h)) $ do
+    void' (setWindowSize (sWindow surf) (fromIntegral w) (fromIntegral h))
+    atomically $ writeTVar (sLastSize surf) (Just (w, h))
 
 moveSurfaceWindow :: Surface -> Int -> Int -> IO ()
-moveSurfaceWindow = SDL3.setWindowPosition . sWindow
+moveSurfaceWindow surf x y = do
+  last <- readTVarIO (sLastPos surf)
+  when (last /= Just (x, y)) $ do
+    SDL3.setWindowPosition (sWindow surf) x y
+    atomically $ writeTVar (sLastPos surf) (Just (x, y))
 
 surfaceWindowSize :: Surface -> IO (V2 Int)
 surfaceWindowSize surf = do

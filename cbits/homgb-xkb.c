@@ -110,6 +110,9 @@ void homgb_x_ignore_errors(Display *dpy) {
  * withdrawn). */
 void homgb_x_map(Display *dpy, Window win) {
   XMapWindow(dpy, win);
+  /* a freshly shown transient (menu, popup) must stack above the
+   * tray dock, or restacking churn lets the tray occlude it */
+  XRaiseWindow(dpy, win);
   XFlush(dpy);
 }
 
