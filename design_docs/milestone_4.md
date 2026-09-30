@@ -20,7 +20,21 @@ WMProps tags by SDL_PROP_WINDOW_X11_WINDOWID pre-map. Verified on
 :1: DOCK+sticky window (depth 32), tray, popup notification, dbusmenu
 open/close-outside, layout indicator click + hotkey.
 
-### Step 2 — multi-window surfaces (NEXT)
+### Step 2 — multi-window surfaces — DONE (commit 4265b3b)
+
+Tray (DOCK+sticky, shrink-wrapped, screen-corner) and NotiPopups
+(NOTIFICATION, mapped only while live, content-sized) on separate SDL
+windows, per-surface ImGui contexts, one shared GL context, event
+routing by SDL_WindowID. No dear-imgui fork needed (per-context
+backend data makes the stock SDL3 backend multi-window-clean).
+Verified under Plasma Wayland via SDL_VIDEODRIVER=x11.
+
+Known issues: menus clip at the tray viewport (get their own surface
+in 4.4); menu outside-click close is blind over Wayland-native windows
+(XQueryPointer limitation, works on X11); menu close relies on
+XQueryPointer root coords (ImGui mouse pos goes stale off-window).
+
+### Step 2.5 / 4.4 — menu surface, notification center panel (NEXT)
 
 Why: nixpkgs "SDL2" is sdl2-compat (SDL3 in a trenchcoat) that burned
 us twice (visualid hint read once at init; alpha FBConfig lying about

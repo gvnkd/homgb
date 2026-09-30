@@ -147,6 +147,41 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   dear-imgui's `newFrame` (ImGui::NewFrame) after it.
 - dear-imgui cabal.project flags now `-sdl +opengl3` (drops the sdl2
   dep entirely; flake keeps no SDL2/sdl2-compat).
+
+## Multi-window surfaces (M4 step 2, commit 4265b3b)
+
+- One SDL window per surface, EACH WITH ITS OWN ImGui context
+  (`DearImGui.Raw.createContext`); ONE GL context made current per
+  surface per frame (all surfaces share the ARGB visual -> texture ids
+  valid everywhere). `ImGui_ImplOpenGL3` backend data is PER-CONTEXT
+  (`io.BackendRendererUserData`) — call openGL3Init/Shutdown once per
+  surface context or NewFrame asserts. `ImGui_ImplSDL3_NewFrame` only
+  fills io; `DearImGui.newFrame` (ImGui::NewFrame) still required.
+- Event routing: SDL_WindowID is byte offset 16 of every
+  window-targeted event (type/reserved/timestamp/windowID); route each
+  event to its surface's context BEFORE `ProcessEvent` — the backend
+  drops events whose windowID isn't its own bd->WindowID, and per-
+  context bd makes the stock backend multi-window-clean. No fork.
+- `xwininfo -root -tree` on XWayland LISTS WITHDRAWN WINDOWS — check
+  "Map State" (IsUnMapped) before believing a window is visible.
+  XWayland restarts when its last client exits -> window ids repeat.
+- `SDL_GL_SwapWindow` on a hidden SDL window MAPS IT: surfaces that
+  start hidden must be skipped entirely in the render loop (not drawn-
+  and-hidden). Same for SDL_GL_MakeCurrent during init (re-hide after).
+- Tray shrink-wrap: NEVER measure inside the ImGui window (viewport
+  clips to the SDL window -> feedback collapse to minimum size);
+  compute content size analytically (items*btn + spacing + indicator).
+- Wayland session (Plasma): SDL3 uses the Wayland backend by default —
+  no X11 windows, x11WindowId = Nothing, EWMH dead, XGrabKey/xcb only
+  see XWayland. Run with SDL_VIDEODRIVER=x11 to stay an X client
+  (works: DOCK/NOTIFICATION types, transparency via KWin compositing).
+  XQueryPointer button state is BLIND over Wayland-native windows, so
+  menu outside-click-close only fires over X clients under XWayland.
+  Menu windows clip at the tray surface viewport (menus need their own
+  surface, M4 step 4.4). dbus: REPLACE_EXISTING cannot steal
+  org.freedesktop.Notifications from Plasma (owner didn't allow
+  replacement); NameInQueue is optimal — we take over if Plasma's
+  daemon dies.
 - WM properties (Homgb.WMProps, C shim): homgb's single SDL window is
   tagged _NET_WM_WINDOW_TYPE=DOCK + SKIP_TASKBAR/PAGER +
   _NET_WM_DESKTOP=0xFFFFFFFF, found by _NET_WM_PID (SDL sets it).
