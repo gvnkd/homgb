@@ -305,6 +305,19 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - steam ships only `steam_tray_mono.png` (grey glyph on WHITE opaque
   bg) via IconThemePath — the white square is the actual icon. Plasma
   recolors it; we render as-is (glyph visible after the tint/bg fix).
+- **Every new surface must be added to `eventRoutes` in Homgb.hs** —
+  twice bitten (menus wid=4, center wid=5 dropped: hover frozen on one
+  element). Symptom: hover works once then never changes.
+- **imgui.ini is DISABLED for all contexts** (homgb_imgui_disable_ini
+  in the sdl3 cpp shim): four ImGui contexts shared the CWD's ini and
+  corrupted each other's window settings. All windows are positioned
+  via setNextWindowPos Always, persistence is useless.
+- **Interactive-vs-rendered offset quirk**: widgets on a sameLine row
+  after a `text` have interactive rects ~130px LEFT of the rendered
+  position (root cause unknown; per-context font metrics suspected).
+  Left-edge widgets (like item rows) are exact. When clicks/hover miss
+  by a consistent offset, grid-probe with an isItemHovered debug log
+  instead of trusting screenshot geometry.
 - NO global key grabs since 855d8c6: homgb exposes
   `org.homgb.Control` on the session bus (path /org/homgb/Control;
   `busctl --user call org.homgb /org/homgb/Control org.homgb.Control
