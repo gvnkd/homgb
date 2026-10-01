@@ -305,6 +305,14 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - steam ships only `steam_tray_mono.png` (grey glyph on WHITE opaque
   bg) via IconThemePath — the white square is the actual icon. Plasma
   recolors it; we render as-is (glyph visible after the tint/bg fix).
+- NO global key grabs since 855d8c6: homgb exposes
+  `org.homgb.Control` on the session bus (path /org/homgb/Control;
+  `busctl --user call org.homgb /org/homgb/Control org.homgb.Control
+  NextLayout`). WMs bind shortcuts to busctl calls - works on Wayland
+  too. dbus-haskell autoMethod: zero-arg IO () methods work fine
+  (2026-10: verified; earlier "not running" was grep missing garbled
+  interleaved log lines + block-buffered stdout - trust exit-state
+  checks, not absence-of-log when debugging).
 - Tray menus: only one open at a time (`hideOthers` in
   Tray/Menu/Render). Close-on-outside-click polls button edges via
   XQueryPointer on the tray's OWN X display (`trayDisplay` in Tray.hs) —
