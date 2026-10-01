@@ -125,5 +125,8 @@ drawOn surf draw = do
 eventRoutes :: AppState -> [(Word32, Raw.Context)]
 eventRoutes app =
   [ (sWindowId s, sContext s)
-  | s <- [surfacesTray (appSurfaces app), surfacesPopups (appSurfaces app)]
+  | s <- [ surfacesTray (appSurfaces app)
+         , surfacesPopups (appSurfaces app)
+         , surfacesMenus (appSurfaces app)
+         ]
   ]

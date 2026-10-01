@@ -88,12 +88,13 @@ createSurface name (V2 w h) = do
     , sLastSize = lastSize
     }
 
--- | Tag with EWMH props; call BEFORE the window is mapped.
+-- | Tag with EWMH props; call BEFORE the window is mapped. The
+-- surface name becomes the WM_CLASS res_class ("homgb-menu" etc).
 tagSurface :: Display -> Surface -> WmClass -> IO ()
 tagSurface dpy surf cls = do
   mId <- x11WindowId (sWindow surf)
   case mId of
-    Just wid -> setSurfaceProps dpy (fromIntegral wid) cls
+    Just wid -> setSurfaceProps dpy (fromIntegral wid) cls (sName surf)
     Nothing ->
       hPutStrLn stderr $ "surface " ++ sName surf ++ ": no X11 window id"
 

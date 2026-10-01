@@ -134,9 +134,12 @@ int homgb_screen_size(void *conn_, int *w, int *h) {
 
 /* Sets _NET_WM_WINDOW_TYPE from type_name (e.g.
  * "_NET_WM_WINDOW_TYPE_DOCK"), plus SKIP_TASKBAR/PAGER and _NET_WM_PID;
- * sticky desktop when sticky != 0. Used pre-map per surface window. */
+ * sticky desktop when sticky != 0. res_class becomes the WM_CLASS
+ * res_class so WMs can tell surfaces apart (xmonad hasBorder rules).
+ * Used pre-map per surface window. */
 void homgb_set_window_type_props(Display *dpy, Window win,
-                                 const char *type_name, int sticky) {
+                                 const char *type_name, int sticky,
+                                 const char *res_class) {
   Atom typeAtom = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
   Atom type = XInternAtom(dpy, type_name, False);
   Atom stateAtom = XInternAtom(dpy, "_NET_WM_STATE", False);
@@ -160,6 +163,13 @@ void homgb_set_window_type_props(Display *dpy, Window win,
   if (sticky) {
     XChangeProperty(dpy, win, desktopAtom, XA_CARDINAL, 32,
                     PropModeReplace, (unsigned char *)&allDesktops, 1);
+  }
+  {
+    /* WM_CLASS = "homgb\0<class>\0" (null-separated, XA_STRING) */
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "homgb%c%s%c", '\0', res_class, '\0');
+    XChangeProperty(dpy, win, XA_WM_CLASS, XA_STRING, 8,
+                    PropModeReplace, (unsigned char *)buf, len);
   }
   XFlush(dpy);
 }

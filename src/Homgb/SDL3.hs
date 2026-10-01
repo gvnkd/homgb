@@ -39,13 +39,20 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, peekByteOff)
 import Linear (V2(..))
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr)
 
 import Prelude hiding (init)
 
 import SDL3.Sys.Error (getError)
 import SDL3.Sys.Events
-  (SDL_Event, SDL_EventType, pollEvent, pattern SDL_EVENT_QUIT)
+  ( SDL_Event
+  , SDL_EventType
+  , pollEvent
+  , pattern SDL_EVENT_QUIT
+  , pattern SDL_EVENT_MOUSE_MOTION
+  )
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
 import SDL3.Sys.Properties (SDL_PropertiesID(..), getNumberProperty)
 import qualified SDL3.Sys.Video as RawVideo

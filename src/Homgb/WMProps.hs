@@ -30,14 +30,18 @@ foreign import ccall "homgb_set_dock_props" c_set_dock_props
 foreign import ccall "homgb_ensure_sticky" c_ensure_sticky
   :: Display -> Window -> IO ()
 foreign import ccall "homgb_set_window_type_props" c_set_type_props
-  :: Display -> Window -> CString -> CInt -> IO ()
+  :: Display -> Window -> CString -> CInt -> CString -> IO ()
 
--- | Tag a surface window with its EWMH class (pre-map). Sticky desktop
--- is only set (and re-asserted) for WmDock.
-setSurfaceProps :: Display -> Window -> WmClass -> IO ()
-setSurfaceProps dpy win cls = do
+-- | Tag a surface window with its EWMH class (pre-map). resClass is
+-- the WM_CLASS res_class so WMs can match single surfaces (e.g.
+-- xmonad @hasBorder False@ for "homgb-menu"). Sticky desktop is only
+-- set (and re-asserted) for WmDock.
+setSurfaceProps :: Display -> Window -> WmClass -> String -> IO ()
+setSurfaceProps dpy win cls resClass = do
   withCString (wmClassAtom cls) $ \atomName ->
-    c_set_type_props dpy win atomName (if cls == WmDock then 1 else 0)
+    withCString resClass $ \className ->
+      c_set_type_props dpy win atomName (if cls == WmDock then 1 else 0)
+        className
   when (cls == WmDock) $ startSticky dpy win
 
 -- | Tag a specific X window (preferred: the SDL window's X11 id from
