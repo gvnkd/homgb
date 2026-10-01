@@ -138,7 +138,6 @@ data Config = Config
   , configTrayPosition :: String
 
   -- keyboard
-  , configKbHotkey :: String
   , configKbLayouts :: [String]
   , configKbIndicator :: Bool
   }
@@ -273,8 +272,6 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "spacing" 4
   -- configTrayPosition
     <*> secondLevel o "tray" "position" "top-right"
-  -- configKbHotkey
-    <*> secondLevel o "keyboard" "hotkey" "ctrl-shift-space"
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -349,7 +346,6 @@ defaultConfigText = Text.pack $ unlines
   , "  spacing: 4"
   , "  position: top-right"
   , "keyboard:"
-  , "  hotkey: ctrl-shift-space"
   , "  layouts: []"
   , "  indicator: true"
   ]

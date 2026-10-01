@@ -7,6 +7,7 @@
 module Homgb.WMProps
   ( WmClass(..)
   , wmClassAtom
+  , installErrorHandler
   , setWindowProperties
   , setWindowPropsById
   , setSurfaceProps
@@ -31,6 +32,15 @@ foreign import ccall "homgb_ensure_sticky" c_ensure_sticky
   :: Display -> Window -> IO ()
 foreign import ccall "homgb_set_window_type_props" c_set_type_props
   :: Display -> Window -> CString -> CInt -> CString -> IO ()
+-- Xlib's default error handler exits the process on any X error;
+-- ours logs and continues. Installed once on the shared display.
+foreign import ccall "homgb_x_ignore_errors" c_ignore_errors
+  :: Display -> IO ()
+
+-- | Install the logging X error handler (Xlib's default exits the
+-- process on any X error, e.g. a property read on a dying window).
+installErrorHandler :: Display -> IO ()
+installErrorHandler = c_ignore_errors
 
 -- | Tag a surface window with its EWMH class (pre-map). resClass is
 -- the WM_CLASS res_class so WMs can match single surfaces (e.g.

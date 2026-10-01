@@ -21,6 +21,7 @@ import Data.Maybe (fromMaybe)
 import System.FilePath ((</>))
 
 import Homgb.Config (Config, getConfig, defaultConfigText)
+import Homgb.Control (startControl)
 import Homgb.ImGui.SDL3 (initForOpenGL, shutdown)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (startKeyboard)
@@ -41,6 +42,7 @@ run = do
   tState <- startNotificationDaemon config
   tray <- startTray
   kb <- startKeyboard config
+  startControl kb
   screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
   traySurf <- createSurface "homgb-tray" (V2 500 80)
   popSurf <- createSurface "homgb-popups" (V2 340 200)

@@ -30,6 +30,7 @@ library
                       , Homgb.Tray.Menu.Render
                       , Homgb.Keyboard
                       , Homgb.Keyboard.Xcb
+                      , Homgb.Control
   build-depends:       base >= 4.7 && < 5
                       , bytestring
                       , sdl3-bindgen-sys >= 0.0.0.3 && < 0.0.1

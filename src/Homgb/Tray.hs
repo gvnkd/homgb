@@ -11,6 +11,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
+import Control.Monad (forM_)
 import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
 import Graphics.X11.Xlib (Display)
@@ -23,6 +24,7 @@ import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
 
 import Homgb.Tray.Menu.Render (Menus, newMenus)
+import Homgb.WMProps (installErrorHandler)
 
 -- | One tray entry. tiVersion bumps whenever the host reports an
 -- icon-affecting change so the renderer re-uploads the GL texture.
@@ -57,6 +59,7 @@ startTray = do
   menus <- newMenus
   prevButtons <- newTVarIO (False, False)
   mDisplay <- catch (Just <$> openDisplay "") ignoreIO
+  forM_ mDisplay installErrorHandler
   client <- connectSession
   _ <- forkIO $ runHost tState client
   return $ TrayEnv tState client textures menus prevButtons mDisplay
