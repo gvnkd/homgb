@@ -5,6 +5,7 @@ module Homgb.Render
   , drawTraySurface
   , drawPopupSurface
   , drawMenusSurface
+  , drawCenterSurface
   , anyMenuOpen
   ) where
 
@@ -27,15 +28,18 @@ import Foreign.Storable (poke)
 
 import System.IO (hPutStrLn, hFlush, stderr)
 import System.Environment (lookupEnv)
+import System.Environment (lookupEnv)
 
 import DearImGui hiding (image, begin)
 import qualified DearImGui.Raw as Raw
   (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
-  , setNextWindowSize, showMetricsWindow)
+  , setNextWindowSize, showMetricsWindow, separator, beginChild, endChild
+  , getMousePos)
 
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
-import Homgb.Notifications.Daemon (NotifyState(..), closeNotiById)
+import Homgb.Notifications.Daemon
+  (NotifyState(..), closeAllNotifications, closeNotiById, expireNotiById)
 import Homgb.Notifications.Data
 import Homgb.SDL3 (Window)
 import qualified Homgb.SDL3 as SDL3
@@ -60,7 +64,7 @@ frameUpkeep app = do
       notis = notiStList state
   now <- getCurrentTime
   forM_ (filter (isExpired config now) notis) $ \noti ->
-    closeNotiById tState (notiId noti) Timeout
+    expireNotiById tState (notiId noti) Timeout
 
 -- | Draw the tray surface and shrink-wrap/position its SDL window at
 -- the configured screen corner.
@@ -184,6 +188,67 @@ drawMenusSurface app = do
       -- a visible jump from the center
       moveSurfaceWindow surf x y
       forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+
+-- | Notification center panel (EWMH DOCK): full-height window at the
+-- right screen edge. Lists the daemon's persistent history (expired
+-- popups included) with per-item dismiss and a clear-all button.
+drawCenterSurface :: AppState -> IO ()
+drawCenterSurface app = do
+  let surf = surfacesCenter (appSurfaces app)
+      tState = appNotify app
+      (sw, sh) = appScreenSize app
+  forM_ (trayDisplay (appTray app)) $ \dpy -> showSurface dpy surf
+  state <- readTVarIO tState
+  let config = notiConfig state
+      width = configWidth config
+      history =
+        (if configNotiCenterNewFirst config then id else reverse)
+          (notiHistory state)
+      x = sw - width - configRightMargin config
+      y = configBarHeight config
+  resizeSurfaceWindow surf width (sh - y - configBottomBarHeight config)
+  moveSurfaceWindow surf x y
+  V2 surfW surfH <- surfaceWindowSize surf
+  let winFlags = foldl1 combineFlags
+        [ ImGuiWindowFlags_NoTitleBar
+        , ImGuiWindowFlags_NoResize
+        , ImGuiWindowFlags_NoMove
+        , ImGuiWindowFlags_NoCollapse
+        ]
+  withImVec2 (ImVec2 0 0) $ \posPtr ->
+    Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+  withImVec2 (ImVec2 (fromIntegral surfW) (fromIntegral surfH)) $ \sizePtr ->
+    Raw.setNextWindowSize sizePtr ImGuiCond_Always
+  beginVisible <- BS.useAsCString "homgb-center"
+    $ \label -> Raw.begin label Nothing (Just winFlags)
+  when beginVisible $ do
+    text ("Notifications (" <> T.pack (show (length history)) <> ")")
+    -- action buttons on their own line, at the left edge: interactive
+    -- rects on a sameLine row after a text are offset ~130px left of
+    -- the rendered position (root cause unknown; left-edge widgets
+    -- like the item rows below behave correctly)
+    closeClicked <- smallButton "x##center-close"
+    when closeClicked $
+      atomically $ writeTVar (appCenterVisible app) False
+    Raw.sameLine
+    clearClicked <- smallButton "clear all"
+    when clearClicked $ closeAllNotifications tState User
+    Raw.separator
+    -- list of persistent notifications
+    forM_ (zip [0 :: Int ..] history) $ \(i, noti) -> do
+      when (i > 0) Raw.separator
+      dismiss <- smallButton ("x##noti-" <> T.pack (show (notiId noti)))
+      Raw.sameLine
+      text (notiSummary noti)
+      unless (T.null (notiBody noti)) $ do
+        Raw.spacing
+        textWrapped (notiBody noti)
+      when dismiss $ closeNotiById tState (notiId noti) User
+    metrics <- lookupEnv "HOMGB_METRICS"
+    case metrics of
+      Just _ -> Raw.showMetricsWindow
+      Nothing -> return ()
+  end
 
 -- | Draw one popup at local x=2 (the surface window hugs the popup
 -- stack, so no window-width math is needed here).

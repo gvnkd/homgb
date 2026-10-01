@@ -4,6 +4,8 @@ module Homgb.Notifications.Daemon
   ( startNotificationDaemon
   , NotifyState(..)
   , closeNotiById
+  , expireNotiById
+  , closeAllNotifications
   ) where
 
 import Control.Applicative ((<|>))
@@ -43,8 +45,12 @@ import Homgb.Notifications.Data
 
 data NotifyState = NotifyState
   { notiStList :: [ Notification ]
-    -- ^ Live notifications, newest first. For M1 every live notification
-    --   is rendered as a popup (the center panel is M3+).
+    -- ^ Live notifications, newest first; rendered as popups and
+    --   removed on expiry
+  , notiHistory :: [ Notification ]
+    -- ^ Everything persistent (non-transient) the daemon has seen,
+    --   newest first; the notification center renders this. Dismiss
+    --   or clear-all removes entries; popup expiry does not.
   , notiStNextId :: Int
     -- ^ Id for the next noti
   , notiConfig :: Config
@@ -229,7 +235,15 @@ notify config tState emit'
   atomically $ modifyTVar' tState $ \state ->
     state { notiStList =
               updatedNotiList (notiStList state) newNoti
-              (fromIntegral (notiRepId newNoti)) }
+              (fromIntegral (notiRepId newNoti))
+          , notiHistory =
+              updatedNotiList
+                (if notiTransient newNoti
+                   then notiHistory state
+                   else newNoti : notiHistory state)
+                newNoti
+                (fromIntegral (notiRepId newNoti))
+          }
 
   return $ fromIntegral $ notiId newNoti
     where
@@ -302,8 +316,9 @@ modifyNoti config noti =
                 $ Map.assocs <$> modifyActionCommands modify }
           return newnoti
 
--- | Remove a notification from state, invoke its onClosed with the given
--- close type (emitting NotificationClosed when configured).
+-- | Remove a notification everywhere (live list AND center history),
+-- invoke its onClosed with the given close type (emitting
+-- NotificationClosed when configured).
 closeNotiById :: TVar NotifyState -> Int -> CloseType -> IO ()
 closeNotiById tState notiId' ctype = do
   state <- readTVarIO tState
@@ -312,8 +327,32 @@ closeNotiById tState notiId' ctype = do
     Nothing -> return ()
     Just noti -> do
       atomically $ modifyTVar' tState $ \s ->
+        s { notiStList = filter (\n -> notiId n /= notiId') (notiStList s)
+          , notiHistory = filter (\n -> notiId n /= notiId') (notiHistory s)
+          }
+      notiOnClosed noti ctype
+
+-- | Popup timeout: drop the notification from the live list but KEEP
+-- it in the center history. onClosed still fires (deadd semantics:
+-- send-noti-closed config).
+expireNotiById :: TVar NotifyState -> Int -> CloseType -> IO ()
+expireNotiById tState notiId' ctype = do
+  state <- readTVarIO tState
+  let mNoti = find (\n -> notiId n == notiId') (notiStList state)
+  case mNoti of
+    Nothing -> return ()
+    Just noti -> do
+      atomically $ modifyTVar' tState $ \s ->
         s { notiStList = filter (\n -> notiId n /= notiId') (notiStList s) }
       notiOnClosed noti ctype
+
+-- | Drop every notification (dismiss/clear-all).
+closeAllNotifications :: TVar NotifyState -> CloseType -> IO ()
+closeAllNotifications tState ctype = do
+  state <- readTVarIO tState
+  mapM_ (\n -> notiOnClosed n ctype) (notiStList state ++ notiHistory state)
+  atomically $ modifyTVar' tState $ \s ->
+    s { notiStList = [], notiHistory = [] }
 
 closeNotification :: TVar NotifyState -> Word32 -> IO ()
 closeNotification tState wid = closeNotiById tState (fromIntegral wid) CloseByCall
@@ -341,6 +380,6 @@ notificationDaemon config tState = do
 
 startNotificationDaemon :: Config -> IO (TVar NotifyState)
 startNotificationDaemon config = do
-  istate <- newTVarIO $ NotifyState [] 1 config
+  istate <- newTVarIO $ NotifyState [] [] 1 config
   _ <- forkIO (notificationDaemon config istate)
   return istate

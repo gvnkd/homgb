@@ -22,11 +22,13 @@ data AppState = AppState
   , appSurfaces :: Surfaces
   , appScreenSize :: (Int, Int)
     -- ^ primary X screen size, for surface positioning
+  , appCenterVisible :: TVar Bool
+    -- ^ notification center panel visibility (DBus ToggleCenter)
   }
 
 initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
-                -> Surfaces -> (Int, Int) -> IO AppState
-initialAppState tState tray kb surfaces screenSize = do
+                -> Surfaces -> (Int, Int) -> TVar Bool -> IO AppState
+initialAppState tState tray kb surfaces screenSize centerVisible = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   return AppState
@@ -37,4 +39,5 @@ initialAppState tState tray kb surfaces screenSize = do
     , appKeyboard = kb
     , appSurfaces = surfaces
     , appScreenSize = screenSize
+    , appCenterVisible = centerVisible
     }

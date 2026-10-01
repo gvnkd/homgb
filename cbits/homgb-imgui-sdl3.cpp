@@ -22,4 +22,11 @@ int homgb_imgui_sdl3_process_event(const void *event) {
   return ImGui_ImplSDL3_ProcessEvent((const SDL_Event *)event) ? 1 : 0;
 }
 
+/* All surfaces share the CWD; per-context ini persistence corrupts
+ * settings across ImGui contexts (and resurrects Debug##Default's
+ * saved position). homgb positions every window with SetNextWindowPos
+ * Always, so persistence is disabled for every context. Call with the
+ * context current. */
+void homgb_imgui_disable_ini(void) { ImGui::GetIO().IniFilename = nullptr; }
+
 } // extern "C"

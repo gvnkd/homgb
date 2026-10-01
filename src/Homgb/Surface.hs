@@ -62,6 +62,7 @@ data Surfaces = Surfaces
   { surfacesTray :: Surface
   , surfacesPopups :: Surface
   , surfacesMenus :: Surface
+  , surfacesCenter :: Surface
   }
 
 -- | Create a hidden, untagged, borderless transparent window with its
@@ -74,6 +75,8 @@ createSurface name (V2 w h) = do
   wid <- fromIntegral <$> getWindowID window
   glCtx <- SDL3.createGLContext window
   ctx <- Raw.createContext
+  Raw.setCurrentContext ctx
+  c_disable_ini
   shown <- newTVarIO False
   lastPos <- newTVarIO Nothing
   lastSize <- newTVarIO Nothing
@@ -116,6 +119,8 @@ foreign import ccall "homgb_x_map" c_x_map
   :: Display -> X11.Window -> IO ()
 foreign import ccall "homgb_x_unmap" c_x_unmap
   :: Display -> X11.Window -> IO ()
+foreign import ccall "homgb_imgui_disable_ini" c_disable_ini
+  :: IO ()
 
 showSurface :: Display -> Surface -> IO ()
 showSurface dpy surf = do
