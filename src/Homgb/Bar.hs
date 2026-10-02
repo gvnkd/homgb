@@ -22,6 +22,12 @@ module Homgb.Bar
   , newBarState
   , refreshBar
   , renderBar
+  , renderWorkspaces
+  , renderWinButtons
+  , barActiveTitle
+  , renderClockWidget
+  , renderDateWidget
+  , fitTitleWidth
   , sameLineS
   , framePadX
   , framePadY
@@ -31,7 +37,9 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, writeTVar)
 import Control.Monad (forM, when)
 import Data.Char (chr)
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime, zonedTimeToLocalTime)
 import qualified Data.ByteString as BS
+import Data.List (find)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Foreign.C.Types (CFloat(..), CLong(..))
@@ -146,7 +154,58 @@ readWindow dpy aDesktop aPid aType aName aDock aDesktopT pid cur xid = do
                     Nothing -> ""
               if T.null title
                 then return Nothing
-                else return (Just (WinInfo xid (truncateTitle title)))
+                else return (Just (WinInfo xid title))
+
+-- | Title of the focused window (for the bar's title widget).
+barActiveTitle :: BarState -> Maybe T.Text
+barActiveTitle s =
+  wiTitle <$> find (\w -> wiXid w == barActiveWindow s) (barWindows s)
+
+-- | Render the clock widget ("HH:MM") at the current cursor position.
+-- Returns the content width.
+renderClockWidget :: Float -> IO Float
+renderClockWidget gap = do
+  sameLineS gap
+  now <- zonedTimeToLocalTime <$> getZonedTime
+  let label = T.pack (formatTime defaultTimeLocale "%H:%M" now)
+  text label
+  ImVec2 tw _ <- calcTextSize label True 0
+  return tw
+
+-- | Render the date widget ("dd.mm") at the current cursor position.
+-- Returns the content width.
+renderDateWidget :: Float -> IO Float
+renderDateWidget gap = do
+  sameLineS gap
+  now <- zonedTimeToLocalTime <$> getZonedTime
+  let label = T.pack (formatTime defaultTimeLocale "%d.%m" now)
+  text label
+  ImVec2 tw _ <- calcTextSize label True 0
+  return tw
+
+-- | Truncate a title to fit a pixel budget (window-title-max).
+fitTitleWidth :: Float -> T.Text -> IO T.Text
+fitTitleWidth maxPx t = do
+  ImVec2 w _ <- calcTextSize t True 0
+  if w <= maxPx
+    then return t
+    else go (T.length t `div` 2)
+  where
+    go 0 = return "…"
+    go n = do
+      let cand = T.take n t <> "…"
+      ImVec2 w _ <- calcTextSize cand True 0
+      if w <= maxPx
+        then grow n cand
+        else go (n `div` 2)
+    grow n cand = do
+      let n' = n + 1
+      if n' >= T.length t
+        then return cand
+        else do
+          let cand' = T.take n' t <> "…"
+          ImVec2 w _ <- calcTextSize cand' True 0
+          if w <= maxPx then grow n' cand' else return cand
 
 -- | Truncate a taskbar title (long browser/terminal titles make the
 -- row unreadable).
@@ -171,50 +230,67 @@ activate :: Display -> CLong -> IO ()
 activate dpy xid =
   c_set_active_window dpy (defaultRootWindow dpy) xid
 
--- | Draw the bar (workspaces, then taskbar) at the current cursor
--- position (the tray window's left edge). Active workspace and
--- focused window are highlighted with the theme menu background.
+-- | Legacy shrink-wrap bar: workspaces + taskbar window buttons.
 -- Returns the content width (0 when nothing is rendered).
 renderBar :: Display -> TVar BarState -> Config -> Theme -> Float -> IO Float
 renderBar dpy st config theme gap = do
   s <- readTVarIO st
   let showWs = configBarWorkspaces config && not (null (barNames s))
-      showWins = configBarWindows config && not (null (barWindows s))
-  wsW <-
-    if showWs
-      then do
-        widths <- mapM (renderWs s) (zip [0 :: Int ..] (barNames s))
-        return (sum widths + fromIntegral (length widths - 1) * gap)
-      else return 0
-  winW <-
-    if showWins
-      then do
-        widths <- mapM (renderWin showWs s) (zip [0 :: Int ..] (barWindows s))
-        return (sum widths + fromIntegral (length widths - 1) * gap)
-      else return 0
+  wsW <- renderWorkspaces dpy st config theme gap
+  winW <- renderWinButtons dpy st config theme gap showWs
   return (wsW + winW)
+
+-- | Workspace buttons (left section). Returns the content width.
+renderWorkspaces :: Display -> TVar BarState -> Config -> Theme -> Float
+                 -> IO Float
+renderWorkspaces dpy st config theme gap = do
+  s <- readTVarIO st
+  if configBarWorkspaces config && not (null (barNames s))
+    then do
+      widths <- mapM (renderWs s) (zip [0 :: Int ..] (barNames s))
+      return (sum widths + fromIntegral (length widths - 1) * gap)
+    else return 0
   where
     renderWs s (i, name) = do
       when (i > 0) $ sameLineS gap
-      clicked <- buttonHilite (i == barCurrent s && i < length (barNames s)) name
+      clicked <- buttonHilite theme (i == barCurrent s && i < length (barNames s)) name
       when clicked $ switchTo dpy i
       buttonWidth name
-    renderWin followWs s (i, win) = do
-      when (followWs || i > 0) $ sameLineS gap
-      clicked <- buttonHilite (wiXid win == barActiveWindow s) (wiTitle win)
+
+-- | Taskbar window buttons (clickable, current workspace).
+-- follow=True chains the first button onto the previous section's
+-- line. Returns the content width.
+renderWinButtons :: Display -> TVar BarState -> Config -> Theme -> Float -> Bool
+                 -> IO Float
+renderWinButtons dpy st config theme gap follow = do
+  s <- readTVarIO st
+  if configBarWindows config && not (null (barWindows s))
+    then do
+      widths <- mapM (renderWin s) (zip [0 :: Int ..] (barWindows s))
+      return (sum widths + fromIntegral (length widths - 1) * gap)
+    else return 0
+  where
+    renderWin s (i, win) = do
+      when (follow || i > 0) $ sameLineS gap
+      let label = truncateTitle (wiTitle win)
+      clicked <- buttonHilite theme (wiXid win == barActiveWindow s) label
       when clicked $ activate dpy (wiXid win)
-      buttonWidth (wiTitle win)
-    buttonHilite active label =
-      if active
-        then withImVec4 (thMenuBg theme) $ \ptr -> do
-          Raw.pushStyleColor ImGuiCol_Button ptr
-          c <- smallButton label
-          popStyleColor 1
-          return c
-        else smallButton label
-    buttonWidth label = do
-      ImVec2 tw _ <- calcTextSize label True 0
-      return (tw + 2 * framePadX)
+      buttonWidth label
+
+buttonHilite :: Theme -> Bool -> T.Text -> IO Bool
+buttonHilite theme active label =
+  if active
+    then withImVec4 (thMenuBg theme) $ \ptr -> do
+      Raw.pushStyleColor ImGuiCol_Button ptr
+      c <- smallButton label
+      popStyleColor 1
+      return c
+    else smallButton label
+
+buttonWidth :: T.Text -> IO Float
+buttonWidth label = do
+  ImVec2 tw _ <- calcTextSize label True 0
+  return (tw + 2 * framePadX)
 
 -- | ImGui's default FramePadding (pixel-probed from the rendered
 -- tray: item pitch = btn + 8 + ItemSpacing 8).

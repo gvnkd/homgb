@@ -34,6 +34,10 @@ data AppState = AppState
     -- ^ last time the surface stacking was re-asserted (z-order)
   , appBar :: TVar BarState
     -- ^ cached EWMH desktop/workspace state (bar section)
+  , appStrut :: TVar (Maybe (Int, Int, Int))
+    -- ^ last _NET_WM_STRUT_PARTIAL written for the bar (depth, x0,
+    -- x1); writes are suppressed while unchanged because each write
+    -- re-runs the WM's avoidStruts
   , appTheme :: Theme
   , appCenterVisible :: TVar Bool
     -- ^ notification center panel visibility (DBus ToggleCenter)
@@ -48,6 +52,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
   pointer <- newTVarIO (0, 0)
   stackTick <- newTVarIO 0
   bar <- newBarState
+  strut <- newTVarIO Nothing
   return AppState
     { appNotify = tState
     , appTextures = textures
@@ -60,6 +65,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
     , appPointer = pointer
     , appStackTick = stackTick
     , appBar = bar
+    , appStrut = strut
     , appTheme = theme
     , appCenterVisible = centerVisible
     }

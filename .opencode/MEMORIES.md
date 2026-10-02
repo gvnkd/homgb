@@ -53,6 +53,13 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   env-wrap only loads direnv env for the CWD (it does not cd): the
   launcher cds to the project itself. trayer stays until homgb hosts
   XEmbed icons (sunshine).
+- Taskbar phase: _NET_CLIENT_LIST_STACKING + per-window
+  _NET_WM_DESKTOP/_NET_WM_NAME/_NET_WM_PID/_NET_WM_WINDOW_TYPE, 5Hz
+  poll in refreshBar (Homgb.Bar). Filters: own PID, DOCK/DESKTOP type,
+  empty/other-desktop. Click -> _NET_ACTIVE_WINDOW client message;
+  xmonad's ewmh focuses the window AND views its workspace
+  (W.focusWindow). _NET_WM_NAME is UTF-8 — decodeUtf8' via
+  getWindowProperty8.
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu

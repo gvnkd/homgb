@@ -51,11 +51,13 @@ import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
-  , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking)
+  , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking
+  , surfaceX11Id)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
 import Homgb.Tray (TrayEnv(..), trayTextures)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
+import Homgb.WMProps (setStrutPartial)
 
 -- | Per-frame state maintenance: popup expiry (checked in the frame
 -- loop, no timeout threads) and, when any surface is configured
@@ -115,31 +117,55 @@ drawTraySurface app = do
       theme = appTheme app
   V2 surfW surfH <- surfaceWindowSize surf
   winPos <- SDL3.windowPosition (sWindow surf)
+  mon <- monitorFor app config configTrayMonitor configTrayFollowMouse
   (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config theme
     (appKeyboard app) (sMainFont surf)
-    (if configBarWorkspaces config then Just (appBar app) else Nothing)
+    (if configBarWorkspaces config || configBarWindows config
+       then Just (appBar app) else Nothing)
     (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
-    winPos (appScreenSize app)
-  mon <- monitorFor app config configTrayMonitor configTrayFollowMouse
-  let (mx, my) = (monX mon, monY mon)
-      (mw, mh) = (monW mon, monH mon)
-      (x, y) = case configTrayPosition config of
-        "top-left" -> (mx + 10, my + 10)
-        "bottom-left" -> (mx + 10, my + mh - 10 - floor h)
-        "bottom-right" -> (mx + mw - 10 - floor w, my + mh - 10 - floor h)
-        _ -> (mx + mw - 10 - floor w, my + 10)
-  resizeSurfaceWindow surf (floor w + 2) (floor h + 2)
-  moveSurfaceWindow surf x y
+    winPos (monW mon, monH mon)
+  if configBarLayout config
+    then do
+      -- full-width bar hugging the monitor's top edge
+      resizeSurfaceWindow surf (monW mon) (floor h + 2)
+      moveSurfaceWindow surf (monX mon) (monY mon)
+      updateStrut app surf mon (floor h + 2)
+    else do
+      let (mx, my) = (monX mon, monY mon)
+          (mw, mh) = (monW mon, monH mon)
+          (x, y) = case configTrayPosition config of
+            "top-left" -> (mx + 10, my + 10)
+            "bottom-left" -> (mx + 10, my + mh - 10 - floor h)
+            "bottom-right" -> (mx + mw - 10 - floor w, my + mh - 10 - floor h)
+            _ -> (mx + mw - 10 - floor w, my + 10)
+      resizeSurfaceWindow surf (floor w + 2) (floor h + 2)
+      moveSurfaceWindow surf x y
   debug <- lookupEnv "HOMGB_DEBUG"
   case debug of
     Just _ -> hPutStrLn stderr
-      $ "tray surface=(" ++ show x ++ "," ++ show y ++ ") "
+      $ "tray surface=(" ++ show (monX mon) ++ "," ++ show (monY mon) ++ ") "
         ++ show (floor w :: Int) ++ "x" ++ show (floor h :: Int)
     Nothing -> return ()
   metrics <- lookupEnv "HOMGB_METRICS"
   case metrics of
     Just _ -> Raw.showMetricsWindow
     Nothing -> return ()
+
+-- | Set _NET_WM_STRUT_PARTIAL on the bar surface so avoidStruts
+-- reserves its strip. Only writes when the geometry changed (each
+-- write makes the WM re-run avoidStruts).
+updateStrut :: AppState -> Surface -> Monitor -> Int -> IO ()
+updateStrut app surf mon depth = do
+  state <- readTVarIO (appNotify app)
+  when (configBarStruts (notiConfig state)) $ do
+    forM_ (trayDisplay (appTray app)) $ \dpy -> do
+      mId <- surfaceX11Id surf
+      forM_ mId $ \wid -> do
+        lastStrut <- readTVarIO (appStrut app)
+        let rect = (depth, monX mon, monX mon + monW mon - 1)
+        when (lastStrut /= Just rect) $ do
+          atomically $ writeTVar (appStrut app) (Just rect)
+          setStrutPartial dpy (fromIntegral wid) rect
 
 -- | Draw notification popups in their own surface window, placed at
 -- the configured corner of the target monitor. The surface hides when

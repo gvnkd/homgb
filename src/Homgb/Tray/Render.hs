@@ -7,7 +7,7 @@ import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent (forkIO)
 import Control.Exception (try, SomeException)
-import Control.Monad (when, forM_)
+import Control.Monad (when, forM_, void)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
 import qualified Data.ByteString as BS
@@ -30,10 +30,13 @@ import StatusNotifier.Host.Service (ItemInfo(..))
 
 import DearImGui hiding (image, begin)
 import qualified DearImGui.Raw as Raw
-  (imageButton, begin, setNextWindowPos, pushStyleColor
+  (imageButton, begin, setNextWindowPos, setNextWindowSize, pushStyleColor
   , pushStyleVar, popStyleVar, getMousePos)
 import DearImGui.Raw.Font (Font(..))
-import Homgb.Bar (BarState, renderBar, sameLineS, framePadX, framePadY)
+import Homgb.Bar
+  ( BarState, barActiveTitle, fitTitleWidth, renderClockWidget
+  , renderDateWidget, renderWinButtons, renderWorkspaces
+  , sameLineS, framePadX, framePadY )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
@@ -47,11 +50,25 @@ type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 
 -- | Draw the tray into the current (tray surface) ImGui context. The
 -- tray window sits at the surface's local origin; returns the measured
--- content size so the caller can shrink-wrap the SDL window.
+-- content size so the caller can shrink-wrap the SDL window. In bar
+-- layout mode the surface spans the full monitor width instead.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Theme
            -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
            -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenSize = do
+renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenSize
+  | configBarLayout config =
+      renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
+        winPos screenSize
+  | otherwise =
+      renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
+        winPos screenSize
+
+-- | Legacy shrink-wrapped corner tray.
+renderTrayLegacy :: TrayEnv -> TrayTextures -> Config -> Theme
+                 -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+                 -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
+renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
+                 winPos screenSize = do
   state <- readTVarIO (trayState env)
   dbg0 <- lookupEnv "HOMGB_DEBUG"
   case dbg0 of
@@ -91,7 +108,12 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
       (kbWidth, barWidth) <- if beginVisible
         then do
           barW0 <- case mBar of
-            Just barT -> renderBar' barT
+            Just barT -> do
+              wsW <- withDpy $ \dpy ->
+                renderWorkspaces dpy barT config theme traySpacing
+              winW <- withDpy $ \dpy ->
+                renderWinButtons dpy barT config theme traySpacing (wsW > 0)
+              return (wsW + winW)
             Nothing -> return 0
           when (barW0 > 0 && not (null items)) $
             sameLineS barItemGap
@@ -100,7 +122,7 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
             renderItem env textures theme iconSize btn traySpacing idx item surfSize
               winPos screenSize
           kbW0 <- renderIndicator kbEnv (configKbIndicator config) traySpacing
-            mainFont btn (length items)
+            mainFont btn (not (null items))
           return (kbW0, barW0)
         else return (0, 0)
       end
@@ -126,8 +148,189 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
   return (trayW, h)
   where
     barItemGap = 12
-    renderBar' barT = case trayDisplay env of
-      Just dpy -> renderBar dpy barT config theme (fromIntegral (thTraySpacing theme))
+    withDpy f = case trayDisplay env of
+      Just dpy -> f dpy
+      Nothing -> return 0
+
+-- | Full-width bar layout (the xmobar replacement), left to right:
+-- workspaces, active window title (capped at bar.window-title-max
+-- px), taskbar window buttons (bar.windows), an h-spacer, then the
+-- right group: tray icons, keyboard indicator, clock "HH:MM", date
+-- "dd.mm". Returns (monitor width, height) — the caller sizes the
+-- surface to the full monitor width.
+renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
+              -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+              -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
+renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
+              winPos screenSize@(monW, _) = do
+  state <- readTVarIO (trayState env)
+  let items = [ ti | ti <- trayItems state
+              , tiStatus ti /= Just "Passive" ]
+      iconSize = fromIntegral (thTrayIconSize theme)
+      traySpacing = fromIntegral (thTraySpacing theme)
+      btn = iconSize + 6
+      contentH = btn + 2 * framePadY + 2 * thTrayPadY theme
+      -- no AlwaysAutoResize here: the window must span the whole
+      -- surface or the spacer-pushed right widgets clip at the
+      -- viewport edge (auto-resize only measures direct content)
+      trayFlags = foldl1 combineFlags
+        [ ImGuiWindowFlags_NoTitleBar
+        , ImGuiWindowFlags_NoResize
+        , ImGuiWindowFlags_NoMove
+        , ImGuiWindowFlags_NoScrollbar
+        , ImGuiWindowFlags_NoCollapse
+        , ImGuiWindowFlags_NoBringToFrontOnFocus
+        ]
+  -- pre-measure every section so the spacer can be computed exactly
+  sects <- measureSections items btn traySpacing
+  let leftW = sectionSum (slLeft sects)
+      rightW = sectionSum (slRight sects)
+      spacerW = max 0 (fromIntegral monW - 2 * thTrayPadX theme
+                       - leftW - rightW - slGaps sects)
+  dbg <- lookupEnv "HOMGB_DEBUG"
+  case dbg of
+    Just _ -> hPutStrLn stderr $ "bar sections: left="
+      ++ show (map snd (slLeft sects)) ++ " right="
+      ++ show (map snd (slRight sects)) ++ " spacer=" ++ show spacerW
+    Nothing -> return ()
+  _ <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
+    withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
+      Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+      Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
+      withImVec2 (ImVec2 0 0) $ \posPtr ->
+        Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+      withImVec2 (ImVec2 (fromIntegral monW) contentH) $ \sizePtr ->
+        Raw.setNextWindowSize sizePtr ImGuiCond_Always
+      beginVisible <- BS.useAsCString "homgb-tray"
+        $ \label -> Raw.begin label Nothing (Just trayFlags)
+      when beginVisible $
+        renderRow env textures config theme kbEnv mainFont mBar items
+          iconSize btn traySpacing sects spacerW surfSize winPos screenSize
+      end
+      Raw.popStyleVar 1
+      popStyleColor 1
+  return (fromIntegral monW, btn + 2 * framePadY + 2 * thTrayPadY theme)
+  where
+    gap = fromIntegral (thTraySpacing theme)
+    withDpy f = case trayDisplay env of
+      Just dpy -> f dpy
+      Nothing -> return 0
+    -- Section widths; the flags say whether each renders at all.
+    measureSections items btn traySpacing = do
+      wsW <- case mBar of
+        Just barT -> withDpy $ \dpy ->
+          renderWorkspaces dpy barT config theme traySpacing
+        Nothing -> return 0
+      titleW <- case mBar of
+        Just barT -> do
+          s <- readTVarIO barT
+          case barActiveTitle s of
+            Nothing -> return 0
+            Just t -> do
+              fitted <- fitTitleWidth (fromIntegral (configBarTitleMax config)) t
+              ImVec2 tw _ <- calcTextSize fitted True 0
+              return tw
+        Nothing -> return 0
+      winW <- case mBar of
+        Just barT -> withDpy $ \dpy ->
+          renderWinButtons dpy barT config theme traySpacing (wsW > 0 || titleW > 0)
+        Nothing -> return 0
+      kbW <- measureIndicator
+      let n = length items
+          iconsW = if n == 0 then 0
+            else fromIntegral n * (btn + 2 * framePadX)
+                   + fromIntegral (n - 1) * traySpacing
+      clockW <- do
+        ImVec2 w _ <- calcTextSize "00:00" True 0
+        return w
+      dateW <- do
+        ImVec2 w _ <- calcTextSize "00.00" True 0
+        return w
+      let left = [ (wsW > 0, wsW), (titleW > 0, titleW), (winW > 0, winW) ]
+          right = [ (iconsW > 0, iconsW), (kbW > 0, kbW)
+                  , (clockW > 0, clockW), (dateW > 0, dateW) ]
+          leftOn = filter fst left
+          rightOn = filter fst right
+          -- one gap between adjacent enabled sections on each side,
+          -- plus one gap on each side of the spacer
+          gaps = gap * fromIntegral
+            (max 0 (length leftOn - 1) + max 0 (length rightOn - 1)
+             + (if null leftOn || null rightOn then 1 else 2))
+      return (SectionLayout leftOn rightOn gaps)
+    sectionSum ps = sum (map snd ps)
+    measureIndicator = case kbEnv of
+      Just kb | configKbIndicator config -> do
+        s <- readTVarIO (kbState kb)
+        let code = T.toUpper (T.take 2 (currentLayout s))
+        if T.null code then return 0 else do
+          ImVec2 tw _ <- calcTextSize code True 0
+          return (tw + 2 * framePadX)
+      _ -> return 0
+
+-- Pre-measured section widths for one bar row.
+data SectionLayout = SectionLayout
+  { slLeft :: [(Bool, Float)]
+  , slRight :: [(Bool, Float)]
+  , slGaps :: Float
+  }
+
+-- | Render one bar row: left sections, h-spacer, right group. The
+-- section list mirrors 'measureSections' (ws, title, windows | icons,
+-- indicator, clock, date).
+renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
+          -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+          -> [TrayItem] -> Float -> Float -> Float -> SectionLayout -> Float
+          -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
+renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
+          traySpacing sects spacerW surfSize winPos screenSize = do
+  let [wsOn, titleOn, winOn] = map (maybe False fst . atSec) [0, 1, 2]
+        where atSec i =
+                let ps = slLeft sects
+                in if i < length ps then Just (ps !! i) else Nothing
+  wsRendered <-
+    if wsOn then case mBar of
+      Just barT -> do
+        _ <- withDpy $ \dpy -> renderWorkspaces dpy barT config theme traySpacing
+        return True
+      Nothing -> return False
+    else return False
+  titleRendered <-
+    if titleOn then case mBar of
+      Just barT -> do
+        s <- readTVarIO barT
+        case barActiveTitle s of
+          Nothing -> return False
+          Just t -> do
+            fitted <- fitTitleWidth (fromIntegral (configBarTitleMax config)) t
+            sameLineS traySpacing
+            text fitted
+            return True
+      Nothing -> return False
+    else return False
+  winRendered <-
+    if winOn then case mBar of
+      Just barT -> do
+        _ <- withDpy $ \dpy ->
+          renderWinButtons dpy barT config theme traySpacing
+            (wsRendered || titleRendered)
+        return True
+      Nothing -> return False
+    else return False
+  -- the h-spacer: pushes the right group to the right edge
+  when (wsRendered || titleRendered || winRendered) $
+    sameLineS spacerW
+  let n = length items
+  forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
+    when (idx > 0) $ sameLineS traySpacing
+    renderItem env textures theme iconSize btn traySpacing idx item surfSize
+      winPos screenSize
+  _ <- renderIndicator kbEnv (configKbIndicator config) traySpacing
+         mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
+  _ <- renderClockWidget traySpacing
+  void $ renderDateWidget traySpacing
+  where
+    withDpy f = case trayDisplay env of
+      Just dpy -> f dpy
       Nothing -> return 0
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
@@ -136,15 +339,15 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
 -- visually the same height as the tray icons. Returns the rendered
 -- width (0 when nothing is drawn).
 renderIndicator :: Maybe KeyboardEnv -> Bool -> Float -> Ptr () -> Float
-                -> Int -> IO Float
-renderIndicator kbEnv indicatorOn gap mainFont btn itemCount =
+                -> Bool -> IO Float
+renderIndicator kbEnv indicatorOn gap mainFont btn follow =
   case kbEnv of
     Just kb | indicatorOn -> do
       pollGroup kb
       s <- readTVarIO (kbState kb)
       let code = T.toUpper (T.take 2 (currentLayout s))
       if T.null code then return 0 else do
-        when (itemCount > 0) $ sameLineS gap
+        when follow $ sameLineS gap
         -- two-pass fit: measure at a trial size, rescale so the text
         -- height equals the icon row height minus the button's frame
         -- padding

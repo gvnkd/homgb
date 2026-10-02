@@ -11,6 +11,7 @@ module Homgb.WMProps
   , setWindowProperties
   , setWindowPropsById
   , setSurfaceProps
+  , setStrutPartial
   ) where
 
 import Control.Concurrent (forkIO, threadDelay)
@@ -20,6 +21,8 @@ import Data.Word (Word64)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt(..), CLong(..))
 import Graphics.X11.Types (Window)
+import Graphics.X11.Xlib.Atom (internAtom)
+import Graphics.X11.Xlib.Extras (changeProperty32, propModeReplace)
 import Graphics.X11.Xlib.Types (Display(..))
 import Graphics.X11.Xlib.Display (defaultRootWindow, openDisplay)
 import System.Posix.Process (getProcessID)
@@ -86,6 +89,18 @@ startSticky _ win = do
     void $ forkIO $ forever $ do
       c_ensure_sticky dpy2 win
       threadDelay 2000000
+
+-- | Set _NET_WM_STRUT_PARTIAL (top strut) on a bar window so
+-- avoidStruts-style layouts reserve its strip: (depth, x0, x1) is
+-- the reserved top area in root coordinates (x0..x1 inclusive).
+setStrutPartial :: Display -> Window -> (Int, Int, Int) -> IO ()
+setStrutPartial dpy win (depth, x0, x1) = do
+  aStrut <- internAtom dpy "_NET_WM_STRUT_PARTIAL" False
+  aCard <- internAtom dpy "CARDINAL" False
+  changeProperty32 dpy win aStrut aCard propModeReplace
+    [ 0, 0, fromIntegral depth, 0
+    , 0, 0, 0, 0
+    , fromIntegral x0, fromIntegral x1, 0, 0 ]
 
 forever :: IO () -> IO ()
 forever act = act >> forever act

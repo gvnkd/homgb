@@ -148,9 +148,18 @@ data Config = Config
   , configTheme :: ThemeConfig
 
   -- bar (xmobar replacement, rendered inside the tray surface)
+  , configBarLayout :: Bool
+    -- ^ full-width bar with the widget layout: workspaces, active
+    -- window title, h-spacer, tray icons, keyboard indicator, clock,
+    -- date (false: legacy shrink-wrapped corner tray)
   , configBarWorkspaces :: Bool
   , configBarWindows :: Bool
     -- ^ taskbar: clickable windows of the current workspace
+  , configBarTitleMax :: Int
+    -- ^ active-window title widget cap, pixels
+  , configBarStruts :: Bool
+    -- ^ set _NET_WM_STRUT_PARTIAL so avoidStruts reserves the bar's
+    -- strip (layout mode)
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -297,10 +306,16 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "behind-windows" False
   -- configTheme
     <*> firstLevel o "theme" defaultThemeConfig
+  -- configBarLayout
+    <*> secondLevel o "bar" "layout" True
   -- configBarWorkspaces
     <*> secondLevel o "bar" "workspaces" True
   -- configBarWindows
-    <*> secondLevel o "bar" "windows" True
+    <*> secondLevel o "bar" "windows" False
+  -- configBarTitleMax
+    <*> secondLevel o "bar" "window-title-max" 200
+  -- configBarStruts
+    <*> secondLevel o "bar" "struts" True
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -468,8 +483,11 @@ defaultConfigText = Text.pack $ unlines
   , "  follow-mouse: false"
   , "  behind-windows: false"
   , "bar:"
+  , "  layout: true"
   , "  workspaces: true"
-  , "  windows: true"
+  , "  windows: false"
+  , "  window-title-max: 200"
+  , "  struts: true"
   , "theme:"
   , "  font:"
   , "    family: \"Noto Sans\""
