@@ -326,9 +326,12 @@ drawTooltipSurface app = do
             + 2 * thTrayPadY theme
           x0 = max (monX mon) (min (tiRootX tip + 14) (monX mon + monW mon - floor winW - 4))
           y0 = max (monY mon) (min (tiRootY tip + 18) (monY mon + monH mon - floor contentH - 4))
+      -- show FIRST, then resize/move: xmonad restores a re-mapped
+      -- float's geometry from its float map, discarding resizes that
+      -- happened while the window was withdrawn (popup pattern)
+      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
       resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
       moveSurfaceWindow surf x0 y0
-      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
       withImVec4 (thMenuBg theme) $ \bgPtr ->
         withImVec4 (thMenuBorder theme) $ \borderPtr -> do
           Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
