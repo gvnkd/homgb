@@ -95,6 +95,14 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   Remaining per-frame costs: z-order re-assert (2 X calls / 200ms),
   full-rate rendering of mostly-static surfaces (the real power item;
   render-on-demand is a future refactor).
+- SNI tooltips: own surface (homgb-tooltip, EWMH TOOLTIP, created
+  LAST = topmost float) — in-window tooltips clip against the bar's
+  54px viewport. offerTooltip (Tray/Render) writes trayTooltip TVar
+  (hover key + delay + root anchor + lastSeen staleness); the surface
+  draws when fresh. Same AlwaysAutoResize trap as the bar: flag +
+  setNextWindowSize circularly collapses wrapped text (6px window);
+  use axis-0 auto-fit WITHOUT the flag. Every new surface goes into
+  eventRoutes AND the xmonad float rules (xmonad.hs).
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu

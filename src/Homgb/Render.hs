@@ -308,41 +308,45 @@ drawTooltipSurface app = do
   now <- getPOSIXTime
   case mTip of
     Just tip | tooltipLive tip now -> do
-      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
       let theme = appTheme app
           mon = monitorAt (appMonitors app) (tiRootX tip, tiRootY tip)
           lines' = tiLines tip
-      -- width: longest line, capped; height auto-fits (size y = 0)
+      -- fully analytic sizing: auto-fit heights cannot be read
+      -- mid-frame reliably, so compute the wrapped height ourselves
       lineWs <- mapM (\l -> do
         ImVec2 w _ <- calcTextSize l True 0
         return w) lines'
+      ImVec2 _ lineH <- calcTextSize "A" True 0
       let maxLine = maximum (0 : lineWs)
           winW = min 420 (maxLine + 2 * thTrayPadX theme)
+          availW = max 1 (winW - 2 * thTrayPadX theme)
+          wraps = sum [ max 1 (ceiling (w / availW)) | w <- lineWs ]
+          contentH = fromIntegral wraps * lineH
+            + fromIntegral (length lines' - 1) * (lineH / 2)
+            + 2 * thTrayPadY theme
           x0 = max (monX mon) (min (tiRootX tip + 14) (monX mon + monW mon - floor winW - 4))
-          y0 = max (monY mon) (min (tiRootY tip + 18) (monY mon + monH mon - 200))
+          y0 = max (monY mon) (min (tiRootY tip + 18) (monY mon + monH mon - floor contentH - 4))
+      resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
+      moveSurfaceWindow surf x0 y0
+      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
       withImVec4 (thMenuBg theme) $ \bgPtr ->
         withImVec4 (thMenuBorder theme) $ \borderPtr -> do
           Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
           Raw.pushStyleColor ImGuiCol_Border borderPtr
           withImVec2 (ImVec2 0 0) $ \posPtr ->
             Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-          withImVec2 (ImVec2 winW 0) $ \sizePtr ->
+          withImVec2 (ImVec2 winW contentH) $ \sizePtr ->
             Raw.setNextWindowSize sizePtr ImGuiCond_Always
           beginVisible <- BS.useAsCString "homgb-tooltip"
             $ \label -> Raw.begin label Nothing (Just tooltipFlags)
-          when beginVisible $ do
+          when beginVisible $
             forM_ (zip [0 :: Int ..] lines') $ \(i, l) -> do
               when (i > 0) $ Raw.spacing
               textWrapped l
-            ImVec2 _ contentH <- getWindowSize
-            resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
-            moveSurfaceWindow surf x0 y0
           end
           popStyleColor 2
     _ -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
   where
-    -- no AlwaysAutoResize: it overrides setNextWindowSize and the
-    -- wrapped text circularly collapses (axis 0 = auto-fit height)
     tooltipFlags = foldl1 combineFlags
       [ ImGuiWindowFlags_NoTitleBar
       , ImGuiWindowFlags_NoResize

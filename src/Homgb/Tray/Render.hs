@@ -65,6 +65,11 @@ offerTooltip env key lines (wx, wy) = do
         atomically $ writeTVar (trayHoverKey env) (Just (key, now))
         return now
     ImVec2 mx my <- Raw.getMousePos
+    dbg <- lookupEnv "HOMGB_DEBUG"
+    case dbg of
+      Just _ -> hPutStrLn stderr $ "tooltip " ++ key ++ ": "
+        ++ show lines
+      Nothing -> return ()
     atomically $ writeTVar (trayTooltip env) (Just TooltipInfo
       { tiLines = lines
       , tiRootX = floor mx + wx
