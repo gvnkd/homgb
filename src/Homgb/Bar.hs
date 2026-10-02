@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | The status-bar section of the tray surface — the xmobar
 -- replacement.
@@ -35,6 +36,7 @@ module Homgb.Bar
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, writeTVar)
+import Control.Exception (IOException, catch)
 import Control.Monad (forM, when)
 import Data.Char (chr)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime, zonedTimeToLocalTime)
@@ -50,8 +52,13 @@ import Graphics.X11.Types (Atom, Window)
 import Graphics.X11.Xlib.Types (Display(..))
 import Graphics.X11.Xlib.Atom (internAtom)
 import Graphics.X11.Xlib.Display (defaultRootWindow)
-import Graphics.X11.Xlib.Extras (getWindowProperty8, getWindowProperty32)
+import Graphics.X11.Xlib.Extras
+  (getWindowProperty8, getWindowProperty32, getWindowAttributes
+  , wa_map_state, waIsViewable)
+import Graphics.X11.Xlib.Misc (getGeometry)
 import System.Posix.Process (getProcessID)
+import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
 
 import DearImGui hiding (begin)
 import qualified DearImGui.Raw as Raw (pushStyleColor)
@@ -75,18 +82,23 @@ data BarState = BarState
     -- ^ _NET_ACTIVE_WINDOW (0 when none)
   , barWindows :: [WinInfo]
     -- ^ current-workspace windows, bottom-to-top stacking order
+  , barCovered :: Bool
+    -- ^ a window overlaps the bar's strip (ToggleStruts, fullscreen
+    --   layouts, floated windows): the bar surface hides
   } deriving (Show)
 
 newBarState :: IO (TVar BarState)
 newBarState = do
   pid <- fromIntegral <$> getProcessID
-  newTVarIO (BarState pid (-1) [] 0 [])
+  newTVarIO (BarState pid (-1) [] 0 [] False)
 
 -- | Re-read the EWMH properties into the TVar. Cheap Xlib reads; call
 -- at a few Hz from the frame loop. Windows appearing/vanishing mid
--- poll yield Nothing reads and are skipped.
-refreshBar :: Display -> TVar BarState -> IO ()
-refreshBar dpy st = do
+-- poll yield Nothing reads and are skipped. mStrut is the bar's own
+-- reserved strip (depth, x0, x1): any current-workspace window
+-- intersecting it sets barCovered.
+refreshBar :: Display -> Maybe (Int, Int, Int) -> TVar BarState -> IO ()
+refreshBar dpy mStrut st = do
   old <- readTVarIO st
   atoms <- mapM (\n -> internAtom dpy n False)
     [ "_NET_CURRENT_DESKTOP", "_NET_DESKTOP_NAMES", "_NET_ACTIVE_WINDOW"
@@ -98,16 +110,34 @@ refreshBar dpy st = do
   names <- readNames dpy (atoms !! 1) root
   active <- fromIntegral <$> readOneDef dpy (atoms !! 2) root (0 :: Int)
   stack <- readWinList dpy (atoms !! 3) root
-  wins <- concat <$> forM stack (\wxid ->
+  winPairs <- concat <$> forM stack (\wxid ->
     maybe [] (:[]) <$> readWindow dpy (atoms !! 4) (atoms !! 5) (atoms !! 6)
                      (atoms !! 7) (atoms !! 8) (atoms !! 9)
                      (barPid old) cur wxid)
+  let wins = map fst winPairs
+      covered = case mStrut of
+        Just (depth, sx0, sx1) ->
+          any (\(_, (wx, wy, ww, wh)) -> intersects (sx0, sx1, depth) (wx, wy, ww, wh)) winPairs
+        Nothing -> False
+  dbg <- lookupEnv "HOMGB_DEBUG"
+  case dbg of
+    Just _ | covered -> hPutStrLn stderr $ "bar covered by: "
+      ++ show [ (wxid, (wx, wy, ww, wh))
+              | (WinInfo wxid _, (wx, wy, ww, wh)) <- winPairs
+              , maybe False (\(depth, sx0, sx1) ->
+                  intersects (sx0, sx1, depth) (wx, wy, ww, wh)) mStrut ]
+    _ -> return ()
   atomically $ writeTVar st old
     { barCurrent = cur
     , barNames = names
     , barActiveWindow = active
     , barWindows = wins
+    , barCovered = covered
     }
+  where
+    intersects (sx0, sx1, depth) (wx, wy, ww, wh) =
+      wx < sx1 + 1 && wx + fromIntegral ww > sx0
+        && wy < depth && wy + fromIntegral wh > (0 :: Int)
 
 readOneDef :: Display -> Atom -> Window -> Int -> IO Int
 readOneDef dpy atom win def = do
@@ -129,10 +159,13 @@ readNames dpy atom win = do
     Just bs -> filter (not . T.null)
       (T.split (== '\0') (T.pack (map (chr . fromIntegral) bs)))
 
--- | Fetch one window's taskbar entry; Nothing when it should not
--- appear (other workspace, homgb's own, dock/desktop type, no title).
+-- | Fetch one window's taskbar entry and geometry; Nothing when it
+-- should not appear (other workspace, homgb's own, dock/desktop type,
+-- no title). Geometry failures (window vanished mid-poll) also yield
+-- Nothing.
 readWindow :: Display -> Atom -> Atom -> Atom -> Atom -> Atom -> Atom
-           -> CLong -> Int -> CLong -> IO (Maybe WinInfo)
+           -> CLong -> Int -> CLong
+           -> IO (Maybe (WinInfo, (Int, Int, Int, Int)))
 readWindow dpy aDesktop aPid aType aName aDock aDesktopT pid cur xid = do
   let win = fromIntegral xid
   desktop <- readOneDef dpy aDesktop win (-1)
@@ -154,7 +187,24 @@ readWindow dpy aDesktop aPid aType aName aDock aDesktopT pid cur xid = do
                     Nothing -> ""
               if T.null title
                 then return Nothing
-                else return (Just (WinInfo xid title))
+                else do
+                  mGeo <- fetchGeometry win
+                  case mGeo of
+                    Nothing -> return Nothing
+                    Just geo -> do
+                      mViewable <- isViewable win
+                      if mViewable
+                        then return (Just (WinInfo xid title, geo))
+                        else return Nothing
+  where
+    isViewable w = do
+      attrs <- getWindowAttributes dpy w
+      return (wa_map_state attrs == waIsViewable)
+    fetchGeometry w =
+      (do (_, gx, gy, gw, gh, _, _) <- getGeometry dpy w
+          return (Just (fromIntegral gx, fromIntegral gy
+                      , fromIntegral gw, fromIntegral gh)))
+        `catch` (\(_ :: IOException) -> return Nothing)
 
 -- | Title of the focused window (for the bar's title widget).
 barActiveTitle :: BarState -> Maybe T.Text

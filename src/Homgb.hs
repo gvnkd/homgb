@@ -22,6 +22,7 @@ import System.FilePath ((</>))
 
 import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
+import Homgb.Bar (barCovered)
 import Homgb.ImGui.SDL3 (initForOpenGL, shutdown)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (startKeyboard)
@@ -120,7 +121,16 @@ mainLoop app = do
   shouldQuit <- SDL3.pumpEvents (eventRoutes app)
   unless shouldQuit $ do
     frameUpkeep app
-    drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
+    -- bar auto-hide: when a window covers the bar's strip (ToggleStruts,
+    -- fullscreen layouts, floated windows), hide the surface entirely
+    state <- readTVarIO (appNotify app)
+    let config = notiConfig state
+    bar <- readTVarIO (appBar app)
+    let covered = configBarLayout config && barCovered bar
+    if covered
+      then forM_ (trayDisplay (appTray app)) $ \dpy ->
+             hideSurface dpy (surfacesTray (appSurfaces app))
+      else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
     -- swapWindow on a hidden SDL window maps it, so the popup surface
     -- must be skipped entirely (not just drawn-and-hidden) while no
     -- popups are live

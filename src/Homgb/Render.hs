@@ -93,7 +93,8 @@ frameUpkeep app = do
       let surfs = appSurfaces app
       reassertStacking dpy (surfacesTray surfs)
       reassertStacking dpy (surfacesMenus surfs)
-      refreshBar dpy (appBar app)
+      mStrut <- readTVarIO (appStrut app)
+      refreshBar dpy mStrut (appBar app)
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.
@@ -112,6 +113,9 @@ monitorFor app cfg idxOf followOf =
 drawTraySurface :: AppState -> IO ()
 drawTraySurface app = do
   let surf = surfacesTray (appSurfaces app)
+  -- idempotent: the bar hides when covered (ToggleStruts/fullscreen)
+  -- and must re-map when the strip is free again
+  forM_ (trayDisplay (appTray app)) $ \dpy -> showSurface dpy surf
   state <- readTVarIO (appNotify app)
   let config = notiConfig state
       theme = appTheme app

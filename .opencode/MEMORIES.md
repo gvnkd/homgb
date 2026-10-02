@@ -60,6 +60,19 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   xmonad's ewmh focuses the window AND views its workspace
   (W.focusWindow). _NET_WM_NAME is UTF-8 — decodeUtf8' via
   getWindowProperty8.
+- Bar layout (bar.layout, default true): full-monitor-width surface,
+  widgets [workspaces][title][windows?][SPACER][icons][kb][clock HH:MM]
+  [date dd.mm]. The ImGui window MUST get an explicit setNextWindowSize
+  — AlwaysAutoResize shrink-wraps DIRECT content only, so the
+  SameLine-spacer-pushed right group clipped to nothing (silent
+  debugging trap: a failed `cabal build` left a stale binary looking
+  identical — confirm build success from its output, not grep -c).
+  _NET_WM_STRUT_PARTIAL (setStrutPartial, changeProperty32) makes
+  xmonad's avoidStruts reserve the strip: new windows map below the
+  bar; pre-existing windows relayout on their next workspace refresh.
+  Strut writes are change-suppressed via appStrut (every write
+  re-runs avoidStruts). Title cap bar.window-title-max is PIXELS
+  (fitTitleWidth binary-searches the ellipsis cut).
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu
