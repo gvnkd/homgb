@@ -21,6 +21,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
@@ -49,7 +50,7 @@ import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
-  , resizeSurfaceWindow, showSurface, surfaceWindowSize)
+  , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
 import Homgb.Tray (TrayEnv(..), trayTextures)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
@@ -76,6 +77,19 @@ frameUpkeep app = do
   when followAny $ forM_ (trayDisplay (appTray app)) $ \dpy -> do
     (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
     atomically $ writeTVar (appPointer app) (fromIntegral rx, fromIntegral ry)
+
+  -- z-order re-assert: WMs restack managed windows on focus/layout
+  -- changes (xmonad puts the tray's float layer above tiled apps,
+  -- KWin uses _NET_WM_STATE) — keep the tray behind everything and
+  -- the menu above by re-lowering/re-raising shown surfaces.
+  now <- getPOSIXTime
+  lastStack <- readTVarIO (appStackTick app)
+  when (now - lastStack > 0.2) $ do
+    atomically $ writeTVar (appStackTick app) now
+    forM_ (trayDisplay (appTray app)) $ \dpy -> do
+      let surfs = appSurfaces app
+      reassertStacking dpy (surfacesTray surfs)
+      reassertStacking dpy (surfacesMenus surfs)
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.

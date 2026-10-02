@@ -31,7 +31,7 @@ foreign import ccall "homgb_set_dock_props" c_set_dock_props
 foreign import ccall "homgb_ensure_sticky" c_ensure_sticky
   :: Display -> Window -> IO ()
 foreign import ccall "homgb_set_window_type_props" c_set_type_props
-  :: Display -> Window -> CString -> CInt -> CString -> IO ()
+  :: Display -> Window -> CString -> CInt -> CString -> CInt -> IO ()
 -- Xlib's default error handler exits the process on any X error;
 -- ours logs and continues. Installed once on the shared display.
 foreign import ccall "homgb_x_ignore_errors" c_ignore_errors
@@ -45,13 +45,18 @@ installErrorHandler = c_ignore_errors
 -- | Tag a surface window with its EWMH class (pre-map). resClass is
 -- the WM_CLASS res_class so WMs can match single surfaces (e.g.
 -- xmonad @hasBorder False@ for "homgb-menu"). Sticky desktop is only
--- set (and re-asserted) for WmDock.
+-- set (and re-asserted) for WmDock. The tray surface additionally gets
+-- _NET_WM_STATE_BELOW (always behind apps); every other surface gets
+-- _NET_WM_STATE_ABOVE (transients on top) — honored by KWin and
+-- friends; xmonad ignores the hints (its float/ignore handling
+-- achieves the same).
 setSurfaceProps :: Display -> Window -> WmClass -> String -> IO ()
 setSurfaceProps dpy win cls resClass = do
+  let stackState = if resClass == "homgb-tray" then 2 else 1
   withCString (wmClassAtom cls) $ \atomName ->
     withCString resClass $ \className ->
       c_set_type_props dpy win atomName (if cls == WmDock then 1 else 0)
-        className
+        className stackState
   when (cls == WmDock) $ startSticky dpy win
 
 -- | Tag a specific X window (preferred: the SDL window's X11 id from
@@ -75,7 +80,7 @@ setWindowProperties dpy = do
   when (win /= 0) $ setWindowPropsById dpy (fromIntegral win)
 
 startSticky :: Display -> Window -> IO ()
-startSticky dpy win = do
+startSticky _ win = do
   mDpy <- catch (Just <$> openDisplay "") (constNoDisplay)
   forM_ mDpy $ \dpy2 ->
     void $ forkIO $ forever $ do

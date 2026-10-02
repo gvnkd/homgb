@@ -19,12 +19,12 @@ module Homgb.Surface
   , resizeSurfaceWindow
   , moveSurfaceWindow
   , surfaceWindowSize
+  , reassertStacking
   ) where
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Monad (forM_, unless, when)
-import Foreign.C.Types (CInt(..))
 import Data.Word (Word32, Word64)
 import DearImGui (Context)
 import qualified DearImGui.Raw as Raw (createContext, setCurrentContext)
@@ -34,8 +34,7 @@ import Graphics.X11.Xlib.Types (Display(..))
 import Linear (V2(..))
 import System.IO (hPutStrLn, stderr)
 
-import SDL3.Sys.Video (SDL_Window, getWindowID, setWindowSize)
-import qualified SDL3.Sys.Video as RawVideo (getWindowSize)
+import SDL3.Sys.Video (getWindowID, setWindowSize)
 
 import Homgb.ImGui.SDL3 (initForOpenGL)
 import Homgb.SDL3 (GLContext, Window, x11WindowId)
@@ -55,6 +54,10 @@ data Surface = Surface
     -- ^ the theme font added to this context's atlas (nullPtr when no
     -- font is configured); lets widgets PushFont(font, size) for
     -- size-matched text (e.g. the tray layout indicator)
+  , sRaiseOnMap :: Bool
+    -- ^ True for transients (menu/popup/center): mapping raises them
+    -- above the tray dock. False for the tray: it maps LOWERED so it
+    -- stays behind every app window (see homgb_x_map_lowered).
   , sWindowId :: Word32
     -- ^ SDL_WindowID for event routing
   , sShown :: TVar Bool
@@ -72,9 +75,9 @@ data Surfaces = Surfaces
 -- | Create a hidden, untagged, borderless transparent window with its
 -- own ImGui context. EWMH tagging and showing happen later (tagging
 -- pre-map). glContext is needed to make the surface current for
--- backend init.
-createSurface :: String -> V2 Int -> IO Surface
-createSurface name (V2 w h) = do
+-- backend init. raiseOnMap: see 'sRaiseOnMap'.
+createSurface :: String -> V2 Int -> Bool -> IO Surface
+createSurface name (V2 w h) raiseOnMap = do
   window <- SDL3.createSurfaceWindow w h
   wid <- fromIntegral <$> getWindowID window
   glCtx <- SDL3.createGLContext window
@@ -90,6 +93,7 @@ createSurface name (V2 w h) = do
     , sContext = ctx
     , sGLContext = glCtx
     , sMainFont = nullPtr
+    , sRaiseOnMap = raiseOnMap
     , sWindowId = wid
     , sShown = shown
     , sLastPos = lastPos
@@ -122,6 +126,8 @@ surfaceX11Id = x11WindowId . sWindow
 -- reporting success while the window stays withdrawn.
 foreign import ccall "homgb_x_map" c_x_map
   :: Display -> X11.Window -> IO ()
+foreign import ccall "homgb_x_map_lowered" c_x_map_lowered
+  :: Display -> X11.Window -> IO ()
 foreign import ccall "homgb_x_unmap" c_x_unmap
   :: Display -> X11.Window -> IO ()
 foreign import ccall "homgb_imgui_disable_ini" c_disable_ini
@@ -136,7 +142,10 @@ showSurface dpy surf = do
     -- ShowWindow reported success but left it withdrawn)
     SDL3.showWindow (sWindow surf)
     mId <- surfaceX11Id surf
-    forM_ mId $ \wid -> c_x_map dpy (fromIntegral wid)
+    forM_ mId $ \wid ->
+      if sRaiseOnMap surf
+        then c_x_map dpy (fromIntegral wid)
+        else c_x_map_lowered dpy (fromIntegral wid)
     atomically $ writeTVar (sShown surf) True
 
 hideSurface :: Display -> Surface -> IO ()
@@ -156,21 +165,35 @@ hideSurface dpy surf = do
 surfaceShown :: Surface -> IO Bool
 surfaceShown = readTVarIO . sShown
 
+-- | Re-assert this surface's stacking position (called periodically
+-- from the render loop: WMs restack managed windows on focus/layout
+-- changes, undoing the map-time raise/lower; without this the tray
+-- randomly jumps above app windows and back). No-op while hidden.
+reassertStacking :: Display -> Surface -> IO ()
+reassertStacking dpy surf = do
+  shown <- surfaceShown surf
+  when shown $ do
+    mId <- surfaceX11Id surf
+    forM_ mId $ \wid ->
+      if sRaiseOnMap surf
+        then c_x_map dpy (fromIntegral wid)
+        else c_x_map_lowered dpy (fromIntegral wid)
+
 -- | Configure calls are suppressed when nothing changed: repeated
 -- XMove/XResize make xmonad restack/refocus the window every frame
 -- (observed as a flickering WM border and occlusion of the menu by
 -- the tray surface).
 resizeSurfaceWindow :: Surface -> Int -> Int -> IO ()
 resizeSurfaceWindow surf w h = do
-  last <- readTVarIO (sLastSize surf)
-  when (last /= Just (w, h)) $ do
+  prev <- readTVarIO (sLastSize surf)
+  when (prev /= Just (w, h)) $ do
     void' (setWindowSize (sWindow surf) (fromIntegral w) (fromIntegral h))
     atomically $ writeTVar (sLastSize surf) (Just (w, h))
 
 moveSurfaceWindow :: Surface -> Int -> Int -> IO ()
 moveSurfaceWindow surf x y = do
-  last <- readTVarIO (sLastPos surf)
-  when (last /= Just (x, y)) $ do
+  prev <- readTVarIO (sLastPos surf)
+  when (prev /= Just (x, y)) $ do
     SDL3.setWindowPosition (sWindow surf) x y
     atomically $ writeTVar (sLastPos surf) (Just (x, y))
 

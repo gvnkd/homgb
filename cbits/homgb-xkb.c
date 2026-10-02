@@ -107,12 +107,19 @@ void homgb_x_ignore_errors(Display *dpy) {
 
 /* Direct map/unmap: SDL_ShowWindow/HideWindow turned out unreliable
  * for surfaces that toggle visibility (reported success, stayed
- * withdrawn). */
+ * withdrawn). The tray maps LOWERED: it is an unmanaged dock that
+ * must stay behind every app window (a raise here would put it over
+ * all apps until the WM's next restack). Transients (menu, popup)
+ * map raised so they stack above the tray dock. */
 void homgb_x_map(Display *dpy, Window win) {
   XMapWindow(dpy, win);
-  /* a freshly shown transient (menu, popup) must stack above the
-   * tray dock, or restacking churn lets the tray occlude it */
   XRaiseWindow(dpy, win);
+  XFlush(dpy);
+}
+
+void homgb_x_map_lowered(Display *dpy, Window win) {
+  XMapWindow(dpy, win);
+  XLowerWindow(dpy, win);
   XFlush(dpy);
 }
 
@@ -134,12 +141,14 @@ int homgb_screen_size(void *conn_, int *w, int *h) {
 
 /* Sets _NET_WM_WINDOW_TYPE from type_name (e.g.
  * "_NET_WM_WINDOW_TYPE_DOCK"), plus SKIP_TASKBAR/PAGER and _NET_WM_PID;
- * sticky desktop when sticky != 0. res_class becomes the WM_CLASS
+ * sticky desktop when sticky != 0. stack_state: 0 none, 1 ABOVE,
+ * 2 BELOW (appended to _NET_WM_STATE; WMs like KWin honor it for
+ * always-on-top/always-behind). res_class becomes the WM_CLASS
  * res_class so WMs can tell surfaces apart (xmonad hasBorder rules).
  * Used pre-map per surface window. */
 void homgb_set_window_type_props(Display *dpy, Window win,
                                  const char *type_name, int sticky,
-                                 const char *res_class) {
+                                 const char *res_class, int stack_state) {
   Atom typeAtom = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
   Atom type = XInternAtom(dpy, type_name, False);
   Atom stateAtom = XInternAtom(dpy, "_NET_WM_STATE", False);
@@ -148,16 +157,21 @@ void homgb_set_window_type_props(Display *dpy, Window win,
   Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
   Atom pidAtom = XInternAtom(dpy, "_NET_WM_PID", False);
   Atom atomType = XInternAtom(dpy, "ATOM", False);
+  Atom aboveAtom = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
+  Atom belowAtom = XInternAtom(dpy, "_NET_WM_STATE_BELOW", False);
   long pid = (long)getpid();
   unsigned int allDesktops = 0xFFFFFFFF;
-  Atom states[2];
+  Atom states[3];
+  int nstates = 0;
 
   XChangeProperty(dpy, win, typeAtom, atomType, 32, PropModeReplace,
                   (unsigned char *)&type, 1);
-  states[0] = skipTaskbar;
-  states[1] = skipPager;
+  states[nstates++] = skipTaskbar;
+  states[nstates++] = skipPager;
+  if (stack_state == 1) states[nstates++] = aboveAtom;
+  if (stack_state == 2) states[nstates++] = belowAtom;
   XChangeProperty(dpy, win, stateAtom, atomType, 32, PropModeReplace,
-                  (unsigned char *)states, 2);
+                  (unsigned char *)states, nstates);
   XChangeProperty(dpy, win, pidAtom, XA_CARDINAL, 32, PropModeReplace,
                   (unsigned char *)&pid, 1);
   if (sticky) {

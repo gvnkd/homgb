@@ -384,6 +384,23 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - **Every new surface must be added to `eventRoutes` in Homgb.hs** —
   twice bitten (menus wid=4, center wid=5 dropped: hover frozen on one
   element). Symptom: hover works once then never changes.
+- Stacking / z-order (2026-10-02): xmonad (and most WMs) re-restacks
+  managed windows on every focus/layout change, undoing any client-side
+  raise/lower within one event. Deterministic order needs BOTH:
+  (1) map-time raise/lower per surface (sRaiseOnMap in Surface; tray
+  maps LOWERED via homgb_x_map_lowered, transients raised), and
+  (2) a 5Hz re-assert in frameUpkeep (reassertStacking) that re-lowers
+  the tray / re-raises the menu — pure client-side, WM-agnostic.
+  _NET_WM_STATE BELOW (tray) / ABOVE (everything else) is set in
+  WMProps (c_set_type_props stack_state) — KWin honors it, xmonad
+  ignores it. xmonad stacks floats by window-id order, so homgb creates
+  the menu surface LAST (highest id = topmost float, above center).
+  WM_STATE presence does NOT prove a window is managed (doIgnore'd
+  windows keep it). xwininfo -root -children lists TOP-first.
+  Caveat: a lowered tray under an overlapping bar/apps is unclickable
+  in the overlap — fine for homgb's endgame (it replaces xmobar and
+  will own the strut zone); partial-strut support (tray.struts) is the
+  future fix if an overlapping foreign bar stays.
 - **imgui.ini is DISABLED for all contexts** (homgb_imgui_disable_ini
   in the sdl3 cpp shim): four ImGui contexts shared the CWD's ini and
   corrupted each other's window settings. All windows are positioned

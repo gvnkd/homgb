@@ -51,11 +51,15 @@ run = do
     Nothing -> return (fallbackMonitor screen)
   centerVisible <- newTVarIO False
   startControl kb centerVisible
-  surfs0 <- mapM (\(name, V2 w h) -> createSurface name (V2 w h))
-    [ ("homgb-tray", V2 500 80)
-    , ("homgb-popups", V2 340 200)
-    , ("homgb-menu", V2 360 560)
-    , ("homgb-center", V2 (configWidth config) 800)
+  surfs0 <- mapM (\(name, V2 w h, raise) -> createSurface name (V2 w h) raise)
+    -- menu is created LAST: xmonad stacks floats by window-id order,
+    -- so the menu surface gets the topmost slot among homgb floats
+    -- ("menu always on top", even over the center panel). The tray
+    -- maps lowered (raise=False) so it stays behind app windows.
+    [ ("homgb-tray", V2 500 80, False)
+    , ("homgb-popups", V2 340 200, True)
+    , ("homgb-center", V2 (configWidth config) 800, True)
+    , ("homgb-menu", V2 360 560, True)
     ]
   -- each surface context gets its own font atlas: add the theme font
   -- to every context before the renderer builds the atlas, and keep
@@ -64,14 +68,14 @@ run = do
     Raw.setCurrentContext (sContext s)
     f <- applyFont theme
     return s { sMainFont = f }
-  let [traySurf, popSurf, menuSurf, centerSurf] = surfs
+  let [traySurf, popSurf, centerSurf, menuSurf] = surfs
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
     tagSurface dpy popSurf WmNotification
-    tagSurface dpy menuSurf WmPopupMenu
     tagSurface dpy centerSurf WmDock
-  mapM_ initSurfaceBackend [traySurf, popSurf, menuSurf, centerSurf]
+    tagSurface dpy menuSurf WmPopupMenu
+  mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf]
   -- making a GL context current maps a hidden SDL window; the
   -- popup surface starts hidden (skip-draw while no popups live)
   SDL3.hideWindow (sWindow popSurf)
@@ -85,9 +89,9 @@ run = do
     -- (io.BackendRendererUserData): init/shutdown it once per surface
     managed_ $ bracket_
       (mapM_ (withSurfaceContext (void openGL3Init))
-        [traySurf, popSurf, menuSurf, centerSurf])
+        [traySurf, popSurf, centerSurf, menuSurf])
       (mapM_ (withSurfaceContext openGL3Shutdown)
-        [centerSurf, menuSurf, popSurf, traySurf])
+        [menuSurf, centerSurf, popSurf, traySurf])
     liftIO $ do
       SDL3.hideWindow (sWindow popSurf)
       SDL3.hideWindow (sWindow menuSurf)

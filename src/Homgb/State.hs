@@ -5,6 +5,7 @@ module Homgb.State where
 import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO)
+import Data.Time.Clock.POSIX (POSIXTime)
 
 import Homgb.Keyboard (KeyboardEnv)
 import Homgb.Monitors (Monitor)
@@ -28,6 +29,8 @@ data AppState = AppState
     -- ^ Xinerama monitor list (single entry on single-screen setups)
   , appPointer :: TVar (Int, Int)
     -- ^ last polled pointer root coordinates (for follow-mouse)
+  , appStackTick :: TVar POSIXTime
+    -- ^ last time the surface stacking was re-asserted (z-order)
   , appTheme :: Theme
   , appCenterVisible :: TVar Bool
     -- ^ notification center panel visibility (DBus ToggleCenter)
@@ -40,6 +43,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
+  stackTick <- newTVarIO 0
   return AppState
     { appNotify = tState
     , appTextures = textures
@@ -50,6 +54,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
     , appScreenSize = screenSize
     , appMonitors = monitors
     , appPointer = pointer
+    , appStackTick = stackTick
     , appTheme = theme
     , appCenterVisible = centerVisible
     }
