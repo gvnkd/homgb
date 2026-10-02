@@ -81,6 +81,20 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   (ToggleStruts, Full layout, floats). drawTraySurface must
   showSurface every frame (idempotent via sShown) — hiding used to be
   one-way because the startup showSurface ran exactly once.
+- Bar EWMH refresh is EVENT-DRIVEN since 2026-10-02: startBarEvents
+  (Homgb.Bar) blocks in XNextEvent on its OWN display (Xlib displays
+  are not thread-safe — never share with the render thread) with root
+  substructure+property selection, setting appBarDirty; frameUpkeep
+  re-reads only when dirty + 5s safety re-sync (root selection cannot
+  see client _NET_WM_NAME changes — needs per-window selection, not
+  worth it). NEVER draw widgets outside Begin: the bar's spacer
+  measurement originally called the render functions pre-Begin —
+  every-frame usage error auto-opened ImGui's Debug##Default window
+  (the "V Debug" under the workspaces). Measure-only variants
+  (measureWorkspaces/measureWinButtons) exist for the pre-Begin math.
+  Remaining per-frame costs: z-order re-assert (2 X calls / 200ms),
+  full-rate rendering of mostly-static surfaces (the real power item;
+  render-on-demand is a future refactor).
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu

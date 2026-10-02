@@ -15,6 +15,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Coerce (coerce)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Foreign.C.Types (CFloat(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr, castPtr)
@@ -34,7 +35,7 @@ import qualified DearImGui.Raw as Raw
   , pushStyleVar, popStyleVar, getMousePos)
 import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
-  ( BarState, barActiveTitle, fitTitleWidth, renderClockWidget
+  ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
   , renderDateWidget, renderWinButtons, renderWorkspaces
   , measureWorkspaces, measureWinButtons
   , sameLineS, framePadX, framePadY )
@@ -42,12 +43,35 @@ import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
 import Homgb.Theme (Theme(..))
-import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..))
+import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
 import Homgb.Tray.Icons (iconRgbaSrc)
 import Homgb.Tray.Menu.Render (openItemMenu)
 
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
+
+-- | Hover tooltip handoff: while the LAST item/widget is hovered,
+-- refresh the pending-tooltip state (the tooltip SURFACE picks it up
+-- after the hover delay; staleness via tiLastSeen).
+offerTooltip :: TrayEnv -> String -> [T.Text] -> (Int, Int) -> IO ()
+offerTooltip env key lines (wx, wy) = do
+  hovered <- isItemHovered
+  now <- getPOSIXTime
+  when (hovered && not (null lines)) $ do
+    hk <- readTVarIO (trayHoverKey env)
+    since <- case hk of
+      Just (k, s) | k == key -> return s
+      _ -> do
+        atomically $ writeTVar (trayHoverKey env) (Just (key, now))
+        return now
+    ImVec2 mx my <- Raw.getMousePos
+    atomically $ writeTVar (trayTooltip env) (Just TooltipInfo
+      { tiLines = lines
+      , tiRootX = floor mx + wx
+      , tiRootY = floor my + wy
+      , tiSince = since
+      , tiLastSeen = now
+      })
 
 -- | Draw the tray into the current (tray surface) ImGui context. The
 -- tray window sits at the surface's local origin; returns the measured
@@ -122,8 +146,8 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
             when (idx > 0) $ sameLineS traySpacing
             renderItem env textures theme iconSize btn traySpacing idx item surfSize
               winPos screenSize
-          kbW0 <- renderIndicator kbEnv (configKbIndicator config) traySpacing
-            mainFont btn (not (null items))
+          kbW0 <- renderIndicator env kbEnv (configKbIndicator config)
+            traySpacing mainFont btn (not (null items)) winPos
           return (kbW0, barW0)
         else return (0, 0)
       end
@@ -182,7 +206,11 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
         , ImGuiWindowFlags_NoCollapse
         , ImGuiWindowFlags_NoBringToFrontOnFocus
         ]
-  -- pre-measure every section so the spacer can be computed exactly
+  -- pre-measure every section so the spacer can be computed exactly.
+  -- Measure-only (no drawing): this runs before Begin. The title is
+  -- flexible: it takes its natural (char-capped) width, shrunk into
+  -- whatever space remains after the fixed sections — a long title
+  -- eats the spacer region before truncating.
   sects <- measureSections items btn traySpacing
   let leftW = sectionSum (slLeft sects)
       rightW = sectionSum (slRight sects)
@@ -217,25 +245,27 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       Just dpy -> f dpy
       Nothing -> return 0
     -- Section widths; the flags say whether each renders at all.
-    -- Measure-only (no drawing): this runs before Begin.
+    -- Measure-only (no drawing): this runs before Begin. The title
+    -- width is computed LAST: natural char-capped width clamped into
+    -- the space left by the fixed sections.
     measureSections items btn traySpacing = do
       wsW <- case mBar of
         Just barT -> measureWorkspaces barT config traySpacing
-        Nothing -> return 0
-      titleW <- case mBar of
-        Just barT -> do
-          s <- readTVarIO barT
-          case barActiveTitle s of
-            Nothing -> return 0
-            Just t -> do
-              fitted <- fitTitleWidth (fromIntegral (configBarTitleMax config)) t
-              ImVec2 tw _ <- calcTextSize fitted True 0
-              return tw
         Nothing -> return 0
       winW <- case mBar of
         Just barT -> measureWinButtons barT config traySpacing
         Nothing -> return 0
       kbW <- measureIndicator
+      titleNatural <- case mBar of
+        Just barT -> do
+          s <- readTVarIO barT
+          case barActiveTitle s of
+            Nothing -> return 0
+            Just t -> do
+              let capped = capTitleChars (configBarTitleMax config) t
+              ImVec2 tw _ <- calcTextSize capped True 0
+              return tw
+        Nothing -> return 0
       let n = length items
           iconsW = if n == 0 then 0
             else fromIntegral n * (btn + 2 * framePadX)
@@ -246,17 +276,26 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       dateW <- do
         ImVec2 w _ <- calcTextSize "00.00" True 0
         return w
-      let left = [ (wsW > 0, wsW), (titleW > 0, titleW), (winW > 0, winW) ]
-          right = [ (iconsW > 0, iconsW), (kbW > 0, kbW)
-                  , (clockW > 0, clockW), (dateW > 0, dateW) ]
-          leftOn = filter fst left
-          rightOn = filter fst right
-          -- one gap between adjacent enabled sections on each side,
-          -- plus one gap on each side of the spacer
-          gaps = gap * fromIntegral
-            (max 0 (length leftOn - 1) + max 0 (length rightOn - 1)
-             + (if null leftOn || null rightOn then 1 else 2))
-      return (SectionLayout leftOn rightOn gaps)
+      let hasTitle = titleNatural > 0
+          leftFlags = [wsW > 0, hasTitle, winW > 0]
+          rightFlags = [iconsW > 0, kbW > 0, clockW > 0, dateW > 0]
+          leftN = length (filter id leftFlags)
+          rightN = length (filter id rightFlags)
+          leftGaps = fromIntegral (max 0 (leftN - 1))
+          rightGaps = fromIntegral (max 0 (rightN - 1))
+          spacerGaps = if leftN > 0 && rightN > 0 then 2
+                       else if leftN + rightN > 0 then 1 else 0
+          fixedLeft = wsW + winW
+          rightTotal = iconsW + kbW + clockW + dateW + rightGaps * gap
+          titleAvail = fromIntegral monW - 2 * thTrayPadX theme
+            - fixedLeft - rightTotal - (leftGaps + spacerGaps) * gap
+          titleW = min titleNatural (max 0 titleAvail)
+          left = filter fst [ (wsW > 0, wsW), (hasTitle, titleW)
+                            , (winW > 0, winW) ]
+          right = filter fst [ (iconsW > 0, iconsW), (kbW > 0, kbW)
+                             , (clockW > 0, clockW), (dateW > 0, dateW) ]
+          gaps = gap * (leftGaps + rightGaps + spacerGaps)
+      return (SectionLayout left right gaps titleW)
     sectionSum ps = sum (map snd ps)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
@@ -272,6 +311,7 @@ data SectionLayout = SectionLayout
   { slLeft :: [(Bool, Float)]
   , slRight :: [(Bool, Float)]
   , slGaps :: Float
+  , slTitleW :: Float
   }
 
 -- | Render one bar row: left sections, h-spacer, right group. The
@@ -301,7 +341,8 @@ renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
         case barActiveTitle s of
           Nothing -> return False
           Just t -> do
-            fitted <- fitTitleWidth (fromIntegral (configBarTitleMax config)) t
+            let capped = capTitleChars (configBarTitleMax config) t
+            fitted <- fitTitleWidth (slTitleW sects) capped
             sameLineS traySpacing
             text fitted
             return True
@@ -324,8 +365,9 @@ renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
     when (idx > 0) $ sameLineS traySpacing
     renderItem env textures theme iconSize btn traySpacing idx item surfSize
       winPos screenSize
-  _ <- renderIndicator kbEnv (configKbIndicator config) traySpacing
+  _ <- renderIndicator env kbEnv (configKbIndicator config) traySpacing
          mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
+         winPos
   _ <- renderClockWidget traySpacing
   void $ renderDateWidget traySpacing
   where
@@ -338,9 +380,9 @@ renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
 -- a size fitted so its button height matches the icon row (btn), i.e.
 -- visually the same height as the tray icons. Returns the rendered
 -- width (0 when nothing is drawn).
-renderIndicator :: Maybe KeyboardEnv -> Bool -> Float -> Ptr () -> Float
-                -> Bool -> IO Float
-renderIndicator kbEnv indicatorOn gap mainFont btn follow =
+renderIndicator :: TrayEnv -> Maybe KeyboardEnv -> Bool -> Float -> Ptr ()
+                -> Float -> Bool -> (Int, Int) -> IO Float
+renderIndicator env kbEnv indicatorOn gap mainFont btn follow winPos =
   case kbEnv of
     Just kb | indicatorOn -> do
       pollGroup kb
@@ -364,7 +406,7 @@ renderIndicator kbEnv indicatorOn gap mainFont btn follow =
         when haveFont $ pushFontWithSize (Font (castPtr mainFont)) (CFloat indSize)
         ImVec2 tw _ <- calcTextSize code True 0
         clicked <- smallButton (code <> "##kbdlayout")
-        setItemTooltip (currentLayout s)
+        offerTooltip env "kbdlayout" [currentLayout s] winPos
         when haveFont popFont
         when clicked $ rotateLayout kb
         return (tw + 2 * framePadX)
@@ -435,14 +477,16 @@ renderItem env textures theme _iconSize btn _traySpacing _idx item surfSize
     openItemMenu (trayClient env) (trayMenus env) info winPos
       (floor surfH) screenSize
 
-  setItemTooltip (T.pack (tooltipText info))
+  offerTooltip env ("icon:" ++ show (coerce name :: String))
+    (filter (not . T.null) (T.lines (T.pack (tooltipText info)))) winPos
 
 tooltipText :: ItemInfo -> String
 tooltipText info =
   case itemToolTip info of
     Just (_, _, tipTitle, tipBody)
-      | not (null tipTitle) -> if null tipBody then tipTitle
-                               else tipTitle ++ "\n" ++ tipBody
+      | not (null tipTitle) && not (null tipBody) -> tipTitle ++ "\n" ++ tipBody
+      | not (null tipTitle) -> tipTitle
+      | not (null tipBody) -> tipBody
     _ -> iconTitle info
 
 safeTitle :: String -> String

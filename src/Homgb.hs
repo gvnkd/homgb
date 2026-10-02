@@ -53,15 +53,16 @@ run = do
   centerVisible <- newTVarIO False
   startControl kb centerVisible
   surfs0 <- mapM (\(name, V2 w h, raise) -> createSurface name (V2 w h) raise)
-    -- menu is created LAST: xmonad stacks floats by window-id order,
-    -- so the menu surface gets the topmost slot among homgb floats
-    -- ("menu always on top", even over the center panel). The tray
-    -- maps lowered when tray.behind-windows is set (it stays behind
-    -- all windows, unclickable where overlapped).
+    -- menu and tooltip are created LAST: xmonad stacks floats by
+    -- window-id order, so they get the topmost slots among homgb
+    -- floats ("menu/tooltip always on top", even over the center
+    -- panel). The tray maps lowered when tray.behind-windows is set
+    -- (it stays behind all windows, unclickable where overlapped).
     [ ("homgb-tray", V2 500 80, not (configTrayBehindWindows config))
     , ("homgb-popups", V2 340 200, True)
     , ("homgb-center", V2 (configWidth config) 800, True)
     , ("homgb-menu", V2 360 560, True)
+    , ("homgb-tooltip", V2 360 120, True)
     ]
   -- each surface context gets its own font atlas: add the theme font
   -- to every context before the renderer builds the atlas, and keep
@@ -70,35 +71,39 @@ run = do
     Raw.setCurrentContext (sContext s)
     f <- applyFont theme
     return s { sMainFont = f }
-  let [traySurf, popSurf, centerSurf, menuSurf] = surfs
+  let [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf] = surfs
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
     tagSurface dpy popSurf WmNotification
     tagSurface dpy centerSurf WmDock
     tagSurface dpy menuSurf WmPopupMenu
-  mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf]
+    tagSurface dpy tooltipSurf WmTooltip
+  mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf]
   -- making a GL context current maps a hidden SDL window; the
-  -- popup surface starts hidden (skip-draw while no popups live)
+  -- popup/menu/center/tooltip surfaces start hidden (skip-draw while
+  -- idle)
   SDL3.hideWindow (sWindow popSurf)
   SDL3.hideWindow (sWindow menuSurf)
   SDL3.hideWindow (sWindow centerSurf)
+  SDL3.hideWindow (sWindow tooltipSurf)
   app <- initialAppState tState tray kb
-    (Surfaces traySurf popSurf menuSurf centerSurf) screen monitors theme
-    centerVisible
+    (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf) screen
+    monitors theme centerVisible
   startBarEvents (appBarDirty app)
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface
     managed_ $ bracket_
       (mapM_ (withSurfaceContext (void openGL3Init))
-        [traySurf, popSurf, centerSurf, menuSurf])
+        [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf])
       (mapM_ (withSurfaceContext openGL3Shutdown)
-        [menuSurf, centerSurf, popSurf, traySurf])
+        [tooltipSurf, menuSurf, centerSurf, popSurf, traySurf])
     liftIO $ do
       SDL3.hideWindow (sWindow popSurf)
       SDL3.hideWindow (sWindow menuSurf)
       SDL3.hideWindow (sWindow centerSurf)
+      SDL3.hideWindow (sWindow tooltipSurf)
       forM_ (trayDisplay tray) $ \dpy -> showSurface dpy traySurf
       mainLoop app
   SDL3.quitVideo
@@ -132,6 +137,13 @@ mainLoop app = do
       then forM_ (trayDisplay (appTray app)) $ \dpy ->
              hideSurface dpy (surfacesTray (appSurfaces app))
       else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
+    -- SNI hover tooltips: own TOOLTIP surface (in-window tooltips
+    -- clip against the bar viewport)
+    ttOpen <- anyTooltipOpen app
+    if ttOpen
+      then drawOn (surfacesTooltip (appSurfaces app)) (drawTooltipSurface app)
+      else forM_ (trayDisplay (appTray app)) $ \dpy ->
+             hideSurface dpy (surfacesTooltip (appSurfaces app))
     -- swapWindow on a hidden SDL window maps it, so the popup surface
     -- must be skipped entirely (not just drawn-and-hidden) while no
     -- popups are live
@@ -177,5 +189,6 @@ eventRoutes app =
          , surfacesPopups (appSurfaces app)
          , surfacesMenus (appSurfaces app)
          , surfacesCenter (appSurfaces app)
+         , surfacesTooltip (appSurfaces app)
          ]
   ]

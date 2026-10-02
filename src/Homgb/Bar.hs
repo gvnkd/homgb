@@ -29,6 +29,7 @@ module Homgb.Bar
   , measureWorkspaces
   , measureWinButtons
   , barActiveTitle
+  , capTitleChars
   , renderClockWidget
   , renderDateWidget
   , fitTitleWidth
@@ -287,12 +288,17 @@ fitTitleWidth maxPx t = do
           ImVec2 w _ <- calcTextSize cand' True 0
           if w <= maxPx then grow n' cand' else return cand
 
+-- | Character cap for the title widget (bar.window-title-max): the
+-- text keeps up to n-1 characters plus an ellipsis.
+capTitleChars :: Int -> T.Text -> T.Text
+capTitleChars n t
+  | T.length t > n = T.take (n - 1) t <> "…"
+  | otherwise = t
+
 -- | Truncate a taskbar title (long browser/terminal titles make the
 -- row unreadable).
 truncateTitle :: T.Text -> T.Text
-truncateTitle t
-  | T.length t > maxLen = T.take (maxLen - 1) t <> "…"
-  | otherwise = t
+truncateTitle = capTitleChars maxLen
   where
     maxLen = 24
 

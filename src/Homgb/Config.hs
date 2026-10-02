@@ -156,7 +156,8 @@ data Config = Config
   , configBarWindows :: Bool
     -- ^ taskbar: clickable windows of the current workspace
   , configBarTitleMax :: Int
-    -- ^ active-window title widget cap, pixels
+    -- ^ active-window title widget cap, CHARACTERS (the widget also
+    -- shrinks to whatever space the spacer leaves before truncating)
   , configBarStruts :: Bool
     -- ^ set _NET_WM_STRUT_PARTIAL so avoidStruts reserves the bar's
     -- strip (layout mode)

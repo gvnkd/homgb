@@ -70,6 +70,7 @@ data Surfaces = Surfaces
   , surfacesPopups :: Surface
   , surfacesMenus :: Surface
   , surfacesCenter :: Surface
+  , surfacesTooltip :: Surface
   }
 
 -- | Create a hidden, untagged, borderless transparent window with its

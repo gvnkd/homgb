@@ -109,11 +109,12 @@ constNoDisplay :: SomeException -> IO (Maybe Display)
 constNoDisplay _ = return Nothing
 
 -- | EWMH window class for a surface.
-data WmClass = WmDock | WmNotification | WmPopupMenu | WmUtility
+data WmClass = WmDock | WmNotification | WmPopupMenu | WmTooltip | WmUtility
   deriving (Eq)
 
 wmClassAtom :: WmClass -> String
 wmClassAtom WmDock = "_NET_WM_WINDOW_TYPE_DOCK"
 wmClassAtom WmNotification = "_NET_WM_WINDOW_TYPE_NOTIFICATION"
 wmClassAtom WmPopupMenu = "_NET_WM_WINDOW_TYPE_POPUP_MENU"
+wmClassAtom WmTooltip = "_NET_WM_WINDOW_TYPE_TOOLTIP"
 wmClassAtom WmUtility = "_NET_WM_WINDOW_TYPE_UTILITY"

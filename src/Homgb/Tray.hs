@@ -4,6 +4,7 @@ module Homgb.Tray
   ( TrayItem(..)
   , TrayState(..)
   , TrayEnv(..)
+  , TooltipInfo(..)
   , startTray
   ) where
 
@@ -13,6 +14,8 @@ import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
 import Control.Monad (forM_)
 import qualified Data.Map.Strict as Map
+import Data.Time.Clock.POSIX (POSIXTime)
+import qualified Data.Text as T
 import Graphics.GL (GLuint)
 import Graphics.X11.Xlib (Display)
 import Graphics.X11.Xlib.Display (openDisplay)
@@ -39,6 +42,20 @@ data TrayState = TrayState
     -- ^ Global counter, bumped on any icon-affecting update
   }
 
+-- | Pending SNI tooltip: rendered on its own surface (EWMH TOOLTIP)
+-- anchored at the pointer — the in-window ImGui tooltip clipped
+-- against the 54px-tall bar viewport, so multi-line SNI tooltips
+-- (blueman) never fit.
+data TooltipInfo = TooltipInfo
+  { tiLines :: [T.Text]
+  , tiRootX :: Int
+  , tiRootY :: Int
+  , tiSince :: POSIXTime
+    -- ^ when the current hover started (delay before showing)
+  , tiLastSeen :: POSIXTime
+    -- ^ last frame the hovered item was hovered (staleness check)
+  }
+
 data TrayEnv = TrayEnv
   { trayState :: TVar TrayState
   , trayClient :: Client
@@ -50,6 +67,9 @@ data TrayEnv = TrayEnv
   , trayDisplay :: Maybe Display
     -- ^ own X connection for global pointer/button polls (SDL only
     -- tracks events delivered to its own window)
+  , trayTooltip :: TVar (Maybe TooltipInfo)
+  , trayHoverKey :: TVar (Maybe (String, POSIXTime))
+    -- ^ which item is hovered and since when (tooltip show delay)
   }
 
 startTray :: IO TrayEnv
@@ -58,11 +78,14 @@ startTray = do
   textures <- newTVarIO Map.empty
   menus <- newMenus
   prevButtons <- newTVarIO (False, False)
+  tooltip <- newTVarIO Nothing
+  hoverKey <- newTVarIO Nothing
   mDisplay <- catch (Just <$> openDisplay "") ignoreIO
   forM_ mDisplay installErrorHandler
   client <- connectSession
   _ <- forkIO $ runHost tState client
   return $ TrayEnv tState client textures menus prevButtons mDisplay
+    tooltip hoverKey
 
 ignoreIO :: IOException -> IO (Maybe Display)
 ignoreIO _ = return Nothing

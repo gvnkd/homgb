@@ -6,7 +6,9 @@ module Homgb.Render
   , drawPopupSurface
   , drawMenusSurface
   , drawCenterSurface
+  , drawTooltipSurface
   , anyMenuOpen
+  , anyTooltipOpen
   ) where
 
 import Control.Concurrent.STM.TVar
@@ -54,7 +56,7 @@ import Homgb.Surface
   , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking
   , surfaceX11Id)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
-import Homgb.Tray (TrayEnv(..), trayTextures)
+import Homgb.Tray (TrayEnv(..), trayTextures, TooltipInfo(..))
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 import Homgb.WMProps (setStrutPartial)
@@ -97,6 +99,7 @@ frameUpkeep app = do
       let surfs = appSurfaces app
       reassertStacking dpy (surfacesTray surfs)
       reassertStacking dpy (surfacesMenus surfs)
+      reassertStacking dpy (surfacesTooltip surfs)
     dirty <- readTVarIO (appBarDirty app)
     lastBar <- readTVarIO (appBarTick app)
     when (dirty || now - lastBar > 5) $ do
@@ -292,6 +295,72 @@ drawMenusSurface app = do
       moveSurfaceWindow surf x y
       forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
 
+-- | SNI tooltip surface (EWMH TOOLTIP): shows the pending hover
+-- tooltip written by the tray render after the hover delay. Renders
+-- like the menu surface — anchored at the pointer, clamped to the
+-- monitor — because in-window ImGui tooltips clip against the bar's
+-- 54px viewport.
+drawTooltipSurface :: AppState -> IO ()
+drawTooltipSurface app = do
+  let surf = surfacesTooltip (appSurfaces app)
+      env = appTray app
+  mTip <- readTVarIO (trayTooltip env)
+  now <- getPOSIXTime
+  case mTip of
+    Just tip | tooltipLive tip now -> do
+      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+      let theme = appTheme app
+          mon = monitorAt (appMonitors app) (tiRootX tip, tiRootY tip)
+          lines' = tiLines tip
+      -- width: longest line, capped; height auto-fits (size y = 0)
+      lineWs <- mapM (\l -> do
+        ImVec2 w _ <- calcTextSize l True 0
+        return w) lines'
+      let maxLine = maximum (0 : lineWs)
+          winW = min 420 (maxLine + 2 * thTrayPadX theme)
+          x0 = max (monX mon) (min (tiRootX tip + 14) (monX mon + monW mon - floor winW - 4))
+          y0 = max (monY mon) (min (tiRootY tip + 18) (monY mon + monH mon - 200))
+      withImVec4 (thMenuBg theme) $ \bgPtr ->
+        withImVec4 (thMenuBorder theme) $ \borderPtr -> do
+          Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+          Raw.pushStyleColor ImGuiCol_Border borderPtr
+          withImVec2 (ImVec2 0 0) $ \posPtr ->
+            Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+          withImVec2 (ImVec2 winW 0) $ \sizePtr ->
+            Raw.setNextWindowSize sizePtr ImGuiCond_Always
+          beginVisible <- BS.useAsCString "homgb-tooltip"
+            $ \label -> Raw.begin label Nothing (Just tooltipFlags)
+          when beginVisible $ do
+            forM_ (zip [0 :: Int ..] lines') $ \(i, l) -> do
+              when (i > 0) $ Raw.spacing
+              textWrapped l
+            ImVec2 _ contentH <- getWindowSize
+            resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
+            moveSurfaceWindow surf x0 y0
+          end
+          popStyleColor 2
+    _ -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
+  where
+    -- no AlwaysAutoResize: it overrides setNextWindowSize and the
+    -- wrapped text circularly collapses (axis 0 = auto-fit height)
+    tooltipFlags = foldl1 combineFlags
+      [ ImGuiWindowFlags_NoTitleBar
+      , ImGuiWindowFlags_NoResize
+      , ImGuiWindowFlags_NoMove
+      , ImGuiWindowFlags_NoCollapse
+      ]
+    tooltipLive tip now =
+      now - tiLastSeen tip < 0.15 && now - tiSince tip > 0.35
+
+-- | Any live tooltip right now? Drives whether the surface renders.
+anyTooltipOpen :: AppState -> IO Bool
+anyTooltipOpen app = do
+  mTip <- readTVarIO (trayTooltip (appTray app))
+  now <- getPOSIXTime
+  return (maybe False (\tip -> tooltipLive' tip now) mTip)
+  where
+    tooltipLive' tip now =
+      now - tiLastSeen tip < 0.15 && now - tiSince tip > 0.35
 -- | Notification center panel (EWMH DOCK): full-height window at the
 -- right screen edge. Lists the daemon's persistent history (expired
 -- popups included) with per-item dismiss and a clear-all button.
