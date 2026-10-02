@@ -43,16 +43,30 @@ and layout indicators with a single immediate-mode application.
 
 ## Build & run
 
-Requires Nix (flakes). The repo has `.envrc`; use the wrapper (see
-`.opencode/MEMORIES.md` for the full pitfall list — read it before
-hacking).
+With Nix (flakes) — no checkout needed:
+
+```sh
+nix run github:gvnkd/homgb        # fetch, build, run
+nix build github:gvnkd/homgb      # just build
+```
+
+From a checkout (development uses the dev shell; agents must use the
+wrapper — see `.opencode/MEMORIES.md` for the full pitfall list, read
+it before hacking):
 
 ```sh
 direnv allow          # once, and after touching flake.nix / cabal.project
 cabal build           # build
 cabal run exe:homgb   # run
 cabal repl lib:homgb  # REPL
+nix build             # build via the flake (package set pinned in nix/)
 ```
+
+The flake pins the Haskell dependencies nixpkgs doesn't carry
+(`nix/*.nix`: dear-imgui 2.5.0, status-notifier-item 0.3.2.16,
+sdl3-bindgen-sys) and builds SDL3 without audio/IME/tray/vulkan
+support — homgb needs none of them, and nixpkgs' defaults pull
+ibus/gtk+3/pipewire into every consumer's closure.
 
 Runtime requirements: X11 (XWayland works), fontconfig (`fc-match`),
 optional compositor for translucency. Recommended fonts:

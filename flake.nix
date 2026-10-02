@@ -7,8 +7,31 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      hsOverlay = import ./nix/overlay.nix;
     in
     {
+      # nix build / nix run . — and on any NixOS system:
+      #   nix run github:gvnkd/homgb
+      packages = forAllSystems (system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ hsOverlay ];
+          };
+          homgb = pkgs.haskellPackages.callCabal2nix "homgb" ./. { };
+        in
+        {
+          inherit homgb;
+          default = homgb;
+        });
+
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/homgb";
+        };
+      });
+
       devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
