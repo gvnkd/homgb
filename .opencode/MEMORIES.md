@@ -17,6 +17,37 @@
 
 # homgb
 
+## Flake packaging (nix build / nix run github:gvnkd/homgb)
+
+- `nix/` holds per-dependency pins (callHackageDirect) for what
+  nixpkgs lacks: dear-imgui 2.5.0, status-notifier-item 0.3.2.16,
+  sdl3-bindgen-sys. callHackageDirect sha256 = the UNPACKED tarball
+  hash (`nix-prefetch-url --unpack`), NOT the flat-file hash.
+- cabal2nix lists default-ON flag deps unconditionally: dear-imgui's
+  `sdl` flag is disabled via `haskell.lib.overrideCabal
+  (configureFlags + "-f-sdl")`, but the sdl2/SDL2 ARGUMENTS must
+  still exist — stub them with `null` and filter nulls out of the
+  depends lists (nixpkgs sdl2/SDL2 are sdl2-compat wrappers whose
+  closure is enormous). Passing `flags = {...}` to .override FAILS
+  ("unexpected argument") — the generated lambda has no flags param.
+- homgb's pkgconfig-depends (xcb, xcb-xkb, x11, sdl3) become
+  cabal2nix lambda arguments resolved from the haskell package set
+  scope — inject them as attributes via the overrides extension
+  (xcb-xkb = xorg.libxcb; the .pc ships inside libxcb).
+- nixpkgs' sdl3 defaults pull ibus + libayatana-appindicator (gtk+3!)
+  + pipewire/pulseaudio/jack into every pkg-config consumer's
+  buildInputs; nixpkgs' generic builder turns every buildInput into
+  --extra-include/lib-dirs, and the giant single argument blows the
+  GHC linker's posix_spawn (E2BIG "Argument list too long"). Fix:
+  `sdl3.override { ibusSupport/pipewireSupport/pulseaudioSupport/
+  jackSupport/traySupport/vulkanSupport/libusbSupport = false; }`
+  (+ doCheck=false: SDL's testautomation expects the disabled
+  backends).
+- The flake builds via `import nixpkgs { overlays = [ (import
+  nix/overlay.nix) ]; }` — overlay files are PLAIN `self: super:` /
+  `final: prev:` functions; a `{ }:` prefix arg breaks composition
+  with infinite recursion.
+
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
 SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
 
