@@ -83,30 +83,99 @@ spacing, position, monitor, `behind-windows`), `bar` (`layout`,
 `workspaces`, `windows`, `window-title-max`, `struts`), `theme`
 (font/colors/sizes), `keyboard`.
 
+## Required fonts
+
+Text rendering uses a primary font plus a chain of **merged fallback
+fonts** (`theme.font.fallbacks`): glyphs the primary font lacks are
+resolved through the fallbacks at render time. The defaults need:
+
+| Slot | Provides | Package (NixOS) |
+|---|---|---|
+| `theme.font.family` (`Noto Sans`) | text, Cyrillic | `noto-fonts` |
+| fallback (`Symbola`) | real Unicode emoji/symbols — e.g. blueman's battery U+1F50B in tooltips | `symbola` |
+| fallback (`Symbols Nerd Font`) | Nerd Font icons (Private Use Area) for bar widgets | `nerd-fonts.symbols-only` |
+
+Tray/notification icons are decoded images, not fonts — only text,
+emoji, and icon glyphs go through the font chain.
+
+```nix
+# configuration.nix (or home-manager fonts.fontconfig)
+fonts.packages = with pkgs; [
+  symbola                 # or noto-fonts-monochrome-emoji
+  nerd-fonts.symbols-only # optional until bar widgets use NF glyphs
+];
+```
+
+Fallback files are pre-filtered before loading: CFF-flavored OpenType
+(`OTTO`), TrueType Collections, and bitmap color emoji (`CBDT`/`CBLC`,
+e.g. `Noto Color Emoji`) are rejected — ImGui's rasterizer only reads
+TrueType outlines. `fc-match -a` candidates are tried in order until
+one loads. To use different fonts, change the family names/paths in
+`theme.font.fallbacks`; any fontconfig pattern or absolute path works.
+
 ## xmonad integration
 
-`XMonad.Hooks.EwmhDesktops` maintains the EWMH root properties the
-bar reads, so no log pipe is needed. Minimal bits:
+The bar reads everything from EWMH root properties
+(`_NET_DESKTOP_NAMES`, `_NET_CURRENT_DESKTOP`, `_NET_CLIENT_LIST_*`,
+`_NET_ACTIVE_WINDOW`), which `XMonad.Hooks.EwmhDesktops` maintains —
+**no log pipe, no `dynamicLogWithPP`**. Prerequisites and wiring:
 
-```haskell
-xmonad $ (docks . ewmh . ewmhFullscreen) def { ... }
+1. **Enable the hooks** (they drive both the EWMH properties and
+   `avoidStruts` for the bar's strut):
 
-myStartupHook = do
-  ...
-  spawnOnce "/path/to/homgb-start &"   -- pgrep-guarded launcher
+   ```haskell
+   xmonad $ (docks . ewmh . ewmhFullscreen) def
+     { layoutHook = avoidStruts myLayout   -- or with a ToggleStruts binding
+     , ...
+     }
+   ```
 
-myManageHook = composeOne
-  [ className =? "homgb-menu"    -?> (doFloat <> hasBorder False)
-  , className =? "homgb-tooltip" -?> (doFloat <> hasBorder False)
-  , className =? "homgb-popups"  -?> (doFloat <> hasBorder False)
-  , className =? "homgb-center"  -?> (doFloat <> hasBorder False)
-  , ...
-  ]
+2. **Autostart** with a pgrep-guarded launcher (plain `spawnOnce`
+   re-fires after `xmonad --restart` and two homgbs would fight over
+   the DBus names):
 
--- no global grabs in homgb: the WM binds the shortcuts
-, ("M-<Space>", spawn "busctl --user call org.homgb /org/homgb/Control org.homgb.Control NextLayout")
-, ("M-n", spawn "busctl --user call org.homgb /org/homgb/Control org.homgb.Control ToggleCenter")
-```
+   ```sh
+   #!/bin/sh
+   # ~/bin/homgb-start
+   pgrep -x homgb >/dev/null 2>&1 && exit 0
+   exec homgb   # or: nix run github:gvnkd/homgb — wrapped in exec
+   ```
+
+   ```haskell
+   myStartupHook = spawnOnce "/home/you/bin/homgb-start &"
+   ```
+
+3. **Float the transient surfaces** (otherwise they tile):
+   ```haskell
+   myManageHook = composeOne
+     [ className =? "homgb-menu"    -?> (doFloat <> hasBorder False)
+     , className =? "homgb-tooltip" -?> (doFloat <> hasBorder False)
+     , className =? "homgb-popups"  -?> (doFloat <> hasBorder False)
+     , className =? "homgb-center"  -?> (doFloat <> hasBorder False)
+     , ...
+     ]
+   ```
+
+4. **Bind the shortcuts** — homgb never grabs keys globally; the WM
+   (or anything) calls the `org.homgb.Control` DBus interface, which
+   also works on Wayland:
+   ```haskell
+   , ("M-<Space>", spawn "busctl --user call org.homgb /org/homgb/Control org.homgb.Control NextLayout")
+   , ("M-n",       spawn "busctl --user call org.homgb /org/homgb/Control org.homgb.Control ToggleCenter")
+   ```
+
+Notes:
+
+- Drop the old panel stack: remove the `xmobar` spawnPipe/`logHook`
+  and the `deadd-notification-center` spawnOnce (homgb owns
+  `org.freedesktop.Notifications`).
+- Keep `trayer` only while you still need XEmbed icons (e.g.
+  Sunshine); homgb's tray is SNI-only.
+- `M-b`/`ToggleStruts`: with struts off, tiled windows overlap the
+  bar's strip and the bar auto-hides by design — it reappears when
+  the strip is free again.
+- Workspace buttons show whatever `_NET_DESKTOP_NAMES` says; no
+  xmonad.hs changes needed for renaming/reordering.
 
 ## Architecture
 
