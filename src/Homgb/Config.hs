@@ -342,6 +342,7 @@ data ThemeConfig = ThemeConfig
   { tcFontFamily :: Maybe Text.Text
   , tcFontSize :: Maybe Float
   , tcFontCyrillic :: Maybe Bool
+  , tcFontFallbacks :: Maybe [Text.Text]
   , tcColors :: Map.Map Text.Text Text.Text
   , tcTrayIconSize :: Maybe Int
   , tcTraySpacing :: Maybe Int
@@ -358,6 +359,7 @@ defaultThemeConfig = ThemeConfig
   { tcFontFamily = Nothing
   , tcFontSize = Nothing
   , tcFontCyrillic = Nothing
+  , tcFontFallbacks = Nothing
   , tcColors = Map.empty
   , tcTrayIconSize = Nothing
   , tcTraySpacing = Nothing
@@ -372,10 +374,14 @@ defaultThemeConfig = ThemeConfig
 instance FromJSON ThemeConfig where
   parseJSON (Y.Object o) = do
     font <- o .:? "font"
-    (ffam, fsz, fcyr) <- case font of
-      Nothing -> return (Nothing, Nothing, Nothing)
-      Just (Y.Object f) ->
-        (,,) <$> f .:? "family" <*> f .:? "size" <*> f .:? "cyrillic"
+    (ffam, fsz, fcyr, ffall) <- case font of
+      Nothing -> return (Nothing, Nothing, Nothing, Nothing)
+      Just (Y.Object f) -> do
+        fam <- f .:? "family"
+        sz <- f .:? "size"
+        cyr <- f .:? "cyrillic"
+        fallbacks <- f .:? "fallbacks"
+        return (fam, sz, cyr, fallbacks)
       Just _ -> fail "Expected Object for theme.font"
     colors <- o .:? "colors" .!= Map.empty
     sizes <- o .:? "sizes"
@@ -403,6 +409,7 @@ instance FromJSON ThemeConfig where
       <$> pure ffam
       <*> pure fsz
       <*> pure fcyr
+      <*> pure ffall
       <*> pure colors
       <*> sizeOf "tray" "icon-size"
       <*> sizeOf "tray" "spacing"
@@ -494,6 +501,10 @@ defaultConfigText = Text.pack $ unlines
   , "    family: \"Noto Sans\""
   , "    size: 28"
   , "    cyrillic: true"
+  , "    fallbacks:"
+  , "      - \"Symbola\""
+  , "      - \"Noto Emoji\""
+  , "      - \"Symbols Nerd Font\""
   , "  colors:"
   , "    popup.bg: \"#212227\""
   , "    popup.bg-low: \"#1a1a1c\""

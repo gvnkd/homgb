@@ -103,6 +103,16 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   setNextWindowSize circularly collapses wrapped text (6px window);
   use axis-0 auto-fit WITHOUT the flag. Every new surface goes into
   eventRoutes AND the xmonad float rules (xmonad.hs).
+- SURFACE ORDERING GOTCHA (cost two debugging rounds): surfaces that
+  shrink-wrap to variable content MUST be shown BEFORE
+  resize/moveSurfaceWindow — xmonad restores a re-mapped float's
+  geometry from its float map, DISCARDING resizes that happened while
+  the window was withdrawn (during a hide->show cycle). Symptom:
+  second show keeps the PREVIOUS content's size. Working pattern =
+  drawPopupSurface (showSurface first, resize at the end); broken =
+  the tooltip's original resize->move->show. Also: auto-fit window
+  heights cannot be read mid-frame (getWindowSize returns the stale
+  size during the frame) — analytic sizing only.
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu

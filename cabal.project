@@ -2,3 +2,7 @@ packages: .
 
 package dear-imgui
   flags: -sdl +opengl3 -vulkan -sdl-renderer -opengl2
+  -- disable C++ IM_ASSERT aborts: an unparseable font then makes
+  -- AddFontFromFileTTF return NULL (handled) instead of killing the
+  -- process, so font fallback candidates can be tried safely
+  cxx-options: -DNDEBUG

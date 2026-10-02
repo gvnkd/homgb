@@ -46,6 +46,21 @@ void *homgb_add_font(const char *filename, float size_pixels,
   return (void *)font;
 }
 
+/* Merge a fallback font into the CURRENT default font (glyphs the
+ * primary font lacks — emoji, Nerd Font icons — resolve through it).
+ * Must be added AFTER the primary font, same size, before the atlas
+ * build. Returns the ImFont* or NULL when loading failed. */
+void *homgb_add_merged_font(const char *filename, float size_pixels,
+                            int with_cyrillic) {
+  ImGuiIO &io = ImGui::GetIO();
+  ImFontConfig cfg;
+  cfg.MergeMode = true;
+  if (with_cyrillic)
+    cfg.GlyphRanges = io.Fonts->GetGlyphRangesCyrillic();
+  ImFont *font = io.Fonts->AddFontFromFileTTF(filename, size_pixels, &cfg);
+  return (void *)font;
+}
+
 /* dear-imgui's sameLine binds SameLine() without the spacing
  * argument; tray.spacing needs it. */
 void homgb_same_line(float spacing) { ImGui::SameLine(0.0f, spacing); }

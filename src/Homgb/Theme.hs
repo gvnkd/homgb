@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Application theming: fonts, colors, sizes, margins and paddings.
 --
@@ -19,9 +20,11 @@ module Homgb.Theme
   , parseHexColor
   ) where
 
-import Control.Monad (when)
+import Control.Monad (filterM, forM_, when)
 import Data.Char (isHexDigit, digitToInt)
-import Data.Maybe (fromMaybe)
+import qualified Data.ByteString as BS
+import Data.List (nub)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -30,7 +33,9 @@ import Foreign.C.Types (CFloat(..), CInt(..))
 import Foreign.Ptr (Ptr, nullPtr)
 import System.Directory (doesFileExist, findExecutable)
 import System.Process (readCreateProcess, proc)
+import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
+import Control.Exception (IOException, catch)
 
 import DearImGui (ImVec4(..))
 import Homgb.Config (Config(..), ThemeConfig(..))
@@ -49,6 +54,9 @@ data FontSpec = FontSpec
 -- resolved.
 data Theme = Theme
   { thFont :: Maybe FontSpec
+  , thFontFallbacks :: [Text]
+    -- ^ merged into the primary font (glyph fallback: emoji, Nerd
+    -- Font icons); same size, resolved the same way
   -- popup palette per urgency
   , thPopupBgLow :: ImVec4
   , thPopupBgNormal :: ImVec4
@@ -102,6 +110,7 @@ mkTheme config = do
                 (fromMaybe False (tcFontCyrillic tc))
   return Theme
     { thFont = font
+    , thFontFallbacks = fromMaybe [] (tcFontFallbacks tc)
     , thPopupBgLow = color "popup.bg-low" (ImVec4 0.10 0.10 0.11 1.0)
     , thPopupBgNormal = color "popup.bg" (ImVec4 0.13 0.14 0.15 1.0)
     , thPopupBgHigh = color "popup.bg-critical" (ImVec4 0.16 0.11 0.11 1.0)
@@ -139,35 +148,90 @@ applyFont theme = case thFont theme of
             (if fontCyrillic fs then 1 else 0)
     when (font == nullPtr) $
       hPutStrLn stderr $ "theme: failed to load font " ++ fontPath fs
+    -- merged fallbacks: glyphs the primary lacks (emoji, NF icons);
+    -- each family may resolve to several candidates (e.g. color vs
+    -- outline emoji) — merge the first that loads
+    forM_ (thFontFallbacks theme) $ \fam ->
+      mergeFallback (fontSizePx fs) fam
     return font
 
 resolveFont :: Text -> Float -> Bool -> IO (Maybe FontSpec)
 resolveFont family sizePx cyrillic = do
   let asPath = T.unpack family
   isFile <- doesFileExist asPath
-  mPath <- if isFile
+  okFile <- if isFile then loadableFontFile asPath else return False
+  mPath <- if okFile
     then return (Just asPath)
-    else fcMatch family
+    else do
+      cands <- fcCandidates family
+      return (listToMaybe cands)
   return (fmap (\p -> FontSpec p sizePx cyrillic) mPath)
 
--- | Resolve a fontconfig family to a file path.
-fcMatch :: Text -> IO (Maybe FilePath)
-fcMatch family = do
+-- | All candidate files for a fontconfig family/pattern, best match
+-- first (fc-match -a). More than one exists when families overlap
+-- (e.g. "Noto Emoji" matches both the color-bitmap and the
+-- monochrome-outline variants — only the latter loads in ImGui's
+-- stb_truetype).
+fcCandidates :: Text -> IO [FilePath]
+fcCandidates family = do
   mFc <- findExecutable "fc-match"
   case mFc of
-    Nothing -> return Nothing
+    Nothing -> return []
     Just fc -> do
-      out <- readCreateProcess (proc fc ["-f", "%{file}", T.unpack family]) ""
-      let path = trim out
-      if null path
-        then return Nothing
-        else do
-          ok <- doesFileExist path
-          return (if ok then Just path else Nothing)
+      out <- readCreateProcess
+        (proc fc ["-a", "-f", "%{file}\n", T.unpack family]) ""
+      let paths = nub (trimLines out)
+      filterM loadableFontFile paths
   where
+    trimLines = map trim . filter (not . null) . lines
     trim = dropWhileEnd' isSpace' . dropWhile isSpace'
     dropWhileEnd' p = foldr (\x xs -> if p x && null xs then [] else x : xs) []
     isSpace' c = c == ' ' || c == '\n' || c == '\t'
+
+-- | Stb/ImGui can only rasterize TrueType-outline fonts: reject CFF
+-- ('OTTO') and bitmap-emoji ('CBDT'/'CBLC'/'sbix') sfnts — passing
+-- those to AddFontFromFileTTF ABORTS the process via IM_ASSERT, so
+-- candidates must be filtered before any load attempt. Reads just
+-- the sfnt table directory.
+loadableFontFile :: FilePath -> IO Bool
+loadableFontFile path = inspect `catch` (\(_ :: IOException) -> return False)
+  where
+    inspect = do
+      bs <- BS.readFile path
+      if BS.length bs < 12 then return False else do
+        let version = BS.take 4 bs
+            nTables = fromIntegral (be16 (BS.drop 4 bs)) :: Int
+            entry i = BS.take 16 (BS.drop (12 + 16 * i) bs)
+            tags = [ BS.take 4 (entry i) | i <- [0 .. nTables - 1]
+                   , BS.length (entry i) == 16 ]
+        return (version /= "OTTO" && version /= "ttcf"
+          && "glyf" `elem` tags
+          && all (`notElem` tags) ["CBDT", "CBLC", "sbix"])
+      -- NB: variable fonts (gvar/fvar) are fine — stb ignores the
+      -- variation tables and rasterizes the default instance
+      -- (NotoSans.ttf is variable and loads perfectly). Unparseable
+      -- fonts return NULL thanks to -DNDEBUG (no IM_ASSERT abort).
+    be16 b = fromIntegral (BS.index b 0) * 256 + fromIntegral (BS.index b 1)
+-- | Merge the first loadable candidate of a fallback family into the
+-- primary font; glyphs the primary lacks resolve through it. Returns
+-- True when a font was merged.
+mergeFallback :: Float -> Text -> IO Bool
+mergeFallback sizePx family = do
+  cands <- do
+    let asPath = T.unpack family
+    isFile <- doesFileExist asPath
+    okFile <- if isFile then loadableFontFile asPath else return False
+    if okFile then return [asPath] else fcCandidates family
+  go cands
+  where
+    go [] = do
+      hPutStrLn stderr $ "theme: no loadable fallback font for "
+        ++ T.unpack family
+      return False
+    go (p:rest) =
+      withCString p $ \pPtr -> do
+        ok <- c_add_merged_font pPtr (realToFrac sizePx) 0
+        if ok == nullPtr then go rest else return True
 
 -- | Parse @#RRGGBB@ or @#RRGGBBAA@ into an 'ImVec4'.
 parseHexColor :: Text -> Maybe ImVec4
@@ -188,4 +252,6 @@ parseHexColor t0 = do
     pair a b = a * 16 + b
 
 foreign import ccall "homgb_add_font" c_add_font
+  :: CString -> CFloat -> CInt -> IO (Ptr ())
+foreign import ccall "homgb_add_merged_font" c_add_merged_font
   :: CString -> CFloat -> CInt -> IO (Ptr ())
