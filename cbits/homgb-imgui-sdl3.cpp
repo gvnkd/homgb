@@ -29,4 +29,25 @@ int homgb_imgui_sdl3_process_event(const void *event) {
  * context current. */
 void homgb_imgui_disable_ini(void) { ImGui::GetIO().IniFilename = nullptr; }
 
+/* Add a TTF/OTF font from a file to the CURRENT context's atlas and
+ * make it the default font. with_cyrillic includes ImGui's Cyrillic
+ * glyph ranges (the built-in default font has none). Returns the ImFont*
+ * or NULL when the file cannot be loaded (caller keeps ImGui's
+ * default). Call before the renderer builds the atlas (per surface). */
+void *homgb_add_font(const char *filename, float size_pixels,
+                     int with_cyrillic) {
+  ImGuiIO &io = ImGui::GetIO();
+  ImFontConfig cfg;
+  if (with_cyrillic)
+    cfg.GlyphRanges = io.Fonts->GetGlyphRangesCyrillic();
+  ImFont *font = io.Fonts->AddFontFromFileTTF(filename, size_pixels, &cfg);
+  if (font)
+    io.FontDefault = font;
+  return (void *)font;
+}
+
+/* dear-imgui's sameLine binds SameLine() without the spacing
+ * argument; tray.spacing needs it. */
+void homgb_same_line(float spacing) { ImGui::SameLine(0.0f, spacing); }
+
 } // extern "C"

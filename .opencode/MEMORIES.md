@@ -1,11 +1,19 @@
 # Taiga
 
-- Project: HomgB (id 15, slug `homgb`), milestone "Milestone 1" (id 182).
-- `taiga-cli` quirks: init needs full `http://localhost:8000/api/v1` URL;
-  token goes to `~/.taiga_token` (not project `.taiga/`); `task list` is
-  NOT filtered by active project (shows other projects' tasks); PATCH
-  needs current `version` field. For milestone/task changes use curl with
-  `~/.taiga_token` (see session history 2026-09-28).
+- Project: HomgB — the DB was WIPED on 2026-10-01 (postgres lost its
+  schema; migrations + fixtures re-applied via `manage.py migrate` +
+  `loaddata initial_project_templates/initial_user` as the taiga user,
+  env copied from /proc/<gunicorn>/environ). Re-created project:
+  slug `homgb-2` (id 3; the old slug `homgb` was taken by a rolled-back
+  row and Taiga 6 slugs are immutable), milestone "Milestone 4" (id 1),
+  tasks #1-5 = M4.5/theming backlog.
+- `taiga-cli` quirks: init needs full `http://127.0.0.1:8000/api/v1`
+  URL (bare `init` rewrites base to `http://localhost:8000` WITHOUT
+  /api/v1 — silent breakage; localhost may also resolve ::1 where
+  nothing listens); token file key is `auth_token`; `task list` is
+  NOT filtered by active project; PATCH needs current `version`.
+  For milestone/task changes use curl with the token (see session
+  history 2026-09-28).
 
 # homgb
 
@@ -20,6 +28,12 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
 - M3 (keyboard layout manager): done. XCB group lock instead of
   setxkbmap (Sergey's call). Design: `design_docs/milestone_3.md`.
 - M4+: notification center panel, multi-monitor.
+- M4 backlog (2026-10-01, uncommitted): theming (Homgb.Theme: fonts,
+  colors, tray icon size, margins/paddings), Cyrillic font,
+  default-timeout 10000, menu GetLayout log rate-limit, modification
+  margin-top/right honored in popup placement, M4.5 multi-monitor
+  (Homgb.Monitors: Xinerama; monitor/follow-mouse keys for tray,
+  popups, center).
 
 ## Architecture
 
@@ -171,6 +185,14 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
 - Tray shrink-wrap: NEVER measure inside the ImGui window (viewport
   clips to the SDL window -> feedback collapse to minimum size);
   compute content size analytically (items*btn + spacing + indicator).
+  An item's real row advance is `btn + 2*style.FramePadding` (4,4
+  default — pixel-probe the pitch if metrics ever look wrong) plus the
+  explicit SameLine spacing; `tray.spacing` is applied via
+  `homgb_same_line` in the sdl3 cpp shim (dear-imgui's sameLine binds
+  SameLine() with no spacing arg). Height = btn + 2*FramePadding.y +
+  2*windowPadding. Undershooting the analytic width clips the trailing
+  icons/indicator — with many tray items this LOOKS like overlapping
+  icons and right-clicks on clipped items dead-stick.
 - **One GLX context CANNOT be switched between SDL windows**: it
   presents only on the window it was created on (blue-clear probe
   showed nothing on the second window). Each surface owns its GL
@@ -235,6 +257,12 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   watches signals.
 - deadd semantics kept: `NotificationClosed` is only emitted when
   `notification.dbus.send-noti-closed: true` (config), NOT by default.
+- Modification rules (`notification.modifications`): matching + Script
+  support are deadd-ported (rules match the pre-modification
+  notification). margin-top/margin-right affect popup PLACEMENT since
+  2026-10-01: margin-right shifts that popup (the popup surface hugs the
+  union), margin-top is that popup's root y and restarts the stack
+  below it (drawPopupSurface: rootTop/idealX).
 - Self-testing recipe (Sergey's X11/xmonad session, Display :1):
   xdotool, imagemagick, flameshot, xprop, xwininfo, libnotify
   (notify-send), dbus (dbus-run-session/dbus-monitor) are all in the
@@ -287,14 +315,62 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   `children-display: submenu`; always render `lnChildren` of the root.
   GetLayout reply = `(u revision, (ia{sv}av))`; parseable via
   `fromVariant :: Variant -> Maybe (Int32, Map Text Variant, [Variant])`.
+  GetLayout error logs are rate-limited (1 per 5s per item, MenuState
+  msErrLogAt) — steam/blueman can emit LayoutUpdated bursts that
+  otherwise spam stderr; the `dbus` package itself NEVER prints.
 - Default ImGui font has NO Cyrillic glyphs (steam's Russian menu labels
-  render as ?????). Load a font with `GetGlyphRangesCyrillic` when needed.
+  render as ?????). Fixed via theming: `theme.font.family` (fontconfig
+  name or path, resolved with `fc-match`, fallback: keep default font)
+  loaded per surface context by `homgb_add_font` in
+  cbits/homgb-imgui-sdl3.cpp — with `cyrillic: true` it passes
+  `io.Fonts->GetGlyphRangesCyrillic()` and sets `io.FontDefault`. Must
+  be called per ImGui context BEFORE the renderer builds the atlas
+  (applyFont in Homgb.Theme, called in Homgb.run right after
+  createSurface). No font configured → default ProggyClean, no
+  Cyrillic (by design). applyFont returns the ImFont* which is stored
+  per surface (Surface.sMainFont); widgets that must NOT inherit the
+  big default size (tray layout indicator) draw via
+  `DearImGui.Raw.Font.pushFontWithSize` (imgui 1.92 PushFont with size
+  override — dear-imgui re-exports it; two-pass measure-then-scale in
+  renderIndicator fits text height to the icon row).
+- Rotation no-op trap: the layout list comes from root
+  `_XKB_RULES_NAMES` (live). If the X session has ONE layout
+  (`setxkbmap -query` shows just "us"), NextLayout locks group 0 and
+  nothing visibly happens — "Meta+Space doesn't switch" is the X
+  keymap, not homgb. `setxkbmap us,ru` fixes it live (XKB group lock
+  survives setxkbmap reloads, see M3 notes). `setxkbmap -query` shows
+  the CONFIGURED layouts, not the locked group — verify switches via
+  the tray indicator (or xcb_xkb_get_state), not setxkbmap.
+- Theming: Homgb.Theme is the ONLY thing renderers read for style
+  (colors/sizes/paddings). YAML `theme:` section: `font.{family,size,
+  cyrillic}`, flat `colors:` map with dotted keys (`popup.bg`,
+  `popup.bg-critical`, `menu.bg`, ...; `#RRGGBB[AA]` via parseHexColor),
+  `sizes.{tray,popup,menu}.padding-x/y` + `sizes.tray.{icon-size,
+  spacing}` (theme wins over legacy `tray.icon-size`/`tray.spacing`).
+  Window padding applied per window with Raw.pushStyleVar
+  ImGuiStyleVar_WindowPadding (exists in dear-imgui 2.5; the
+  withWindowOpen wrappers take no flags, Raw is the way).
+- Multi-monitor: Homgb.Monitors (Xinerama via the X11 package's  Graphics.X11.Xinerama — libXinerama already in flake). `monitor:` /
+  `follow-mouse:` keys now work for tray (`tray.monitor/follow-mouse`),
+  popups (`notification.popup.*`), center (`notification-center.*`).
+  appMonitors in AppState (queried once at startup; Xinerama inactive →
+  single full-screen monitor). follow-mouse reads appPointer, polled per
+  frame in frameUpkeep via queryPointer on trayDisplay (only when some
+  follow-mouse is set). Menus clamp inside the monitor containing the
+  cursor. Surfaces stay single per type (no per-monitor popup surfaces).
 - **`Raw.imageButton` arg order is (label, texRef, size, uv0, uv1,
   bg_col, tint_col)** — passing (tint, bg) swapped makes tint alpha 0
   with a white bg → every tray icon renders as a SOLID WHITE SQUARE.
   Cost a debugging session; the bg is invisible so it looks like an
   upload/decode bug (decode was fine — always verify source PNG pixels
   first). `drawImage`/`Raw.image` have no such params.
+- SNI Activate/ContextMenu calls must NEVER run on the render thread:
+  flameshot never replies to Activate, and a synchronous `DBus.Client
+  .call` blocks ~25s (DBus default timeout) — the entire UI freezes
+  and the queued SDL input replays afterwards (menus appear to toggle
+  randomly). Fork the call (see renderItem) and log failures async.
+  Send the click as ROOT coordinates (winPos + ImGui mouse pos);
+  fabricated window-local coords made flameshot misbehave.
 - SNI icon NAMES can contain dots ("dev.lizardbyte.app.Sunshine-tray") —
   don't use `takeExtension` to detect file paths; check for known image
   extensions / leading slashes instead. Sunshine's icon is SVG-only:
@@ -332,14 +408,19 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   SDL's getMouseButtons only sees clicks delivered to homgb's window.
   ImGui MousePos is -FLT_MAX when the pointer leaves the SDL window;
   that counts as outside (foreign click closes the menu). The opening
-  press is ignored via msOpenedAt 0.25s guard. Menus render after the
+  press is ignored via msOpenedAt 0.25s guard. A press shorter than one
+  frame (synthetic `xdotool click`, not human clicks) falls between the
+  polls and is missed — use mousedown/sleep/mouseup when testing. Menus render after the
   tray window and the tray has NoBringToFrontOnFocus — otherwise the
   right-click focuses the tray and ImGui draws it OVER the menu.
   xdotool `click` is faster than a frame — use mousedown/sleep/mouseup
   to test click handling, or polling misses the press entirely.
 - Timeout semantics (deadd `startTimeoutThread`): 0 = never, >0 = ms,
   <0 = `popup.default-timeout` ms. Expiry is checked in the render frame
-  loop (`isExpired` in Render.hs), no threads.
+  loop (`isExpired` in Render.hs), no threads. Default is 10000
+  (deadd README value; homgb's shipped defaultConfigText once had `10`
+  = 10ms flash). busctl eats `-1` as a flag — expire tests use positive
+  ms.
 - `parseHtmlEntities` was ported without regex-tdfa (hand-rolled scanner);
   Helpers only carries pure functions (no i18n/ConfigFile).
 - deadd's `Notification` gained `notiCreatedAt :: UTCTime` (needed for

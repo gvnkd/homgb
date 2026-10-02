@@ -15,29 +15,32 @@ import Control.Monad (when, unless, forM_)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
 import Data.List ((\\))
+import Data.Maybe (fromMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
-import qualified Data.Map.Strict as Map
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
+import Graphics.X11.Xlib (Display)
+import Graphics.X11.Xlib.Display (defaultRootWindow)
+import Graphics.X11.Xlib.Misc (queryPointer)
 
 import System.IO (hPutStrLn, hFlush, stderr)
-import System.Environment (lookupEnv)
 import System.Environment (lookupEnv)
 
 import DearImGui hiding (image, begin)
 import qualified DearImGui.Raw as Raw
   (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
   , setNextWindowSize, showMetricsWindow, separator, beginChild, endChild
-  , getMousePos)
+  , getMousePos, pushStyleVar)
 
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
+import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
 import Homgb.Notifications.Daemon
   (NotifyState(..), closeAllNotifications, closeNotiById, expireNotiById)
 import Homgb.Notifications.Data
@@ -47,15 +50,17 @@ import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
   , resizeSurfaceWindow, showSurface, surfaceWindowSize)
+import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
 import Homgb.Tray (TrayEnv(..), trayTextures)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 
 -- | Per-frame state maintenance: popup expiry (checked in the frame
--- loop, no timeout threads). Texture uploads/pruning happen in
--- drawPopupSurface instead: GL contexts are per-surface and unshared,
--- so popup image textures must be created/deleted under the popup
--- context.
+-- loop, no timeout threads) and, when any surface is configured
+-- follow-mouse, the pointer poll that placement reads. Texture
+-- uploads/pruning happen in drawPopupSurface instead: GL contexts are
+-- per-surface and unshared, so popup image textures must be
+-- created/deleted under the popup context.
 frameUpkeep :: AppState -> IO ()
 frameUpkeep app = do
   let tState = appNotify app
@@ -65,6 +70,24 @@ frameUpkeep app = do
   now <- getCurrentTime
   forM_ (filter (isExpired config now) notis) $ \noti ->
     expireNotiById tState (notiId noti) Timeout
+  let followAny = configNotiFollowMouse config
+        || configNotiCenterFollowMouse config
+        || configTrayFollowMouse config
+  when followAny $ forM_ (trayDisplay (appTray app)) $ \dpy -> do
+    (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
+    atomically $ writeTVar (appPointer app) (fromIntegral rx, fromIntegral ry)
+
+-- | Pick the monitor a surface lives on: the configured index, or the
+-- one containing the pointer when follow-mouse is set.
+monitorFor :: AppState -> Config -> (Config -> Int) -> (Config -> Bool)
+           -> IO Monitor
+monitorFor app cfg idxOf followOf =
+  let ms = appMonitors app
+  in if followOf cfg
+       then do
+         p <- readTVarIO (appPointer app)
+         return (monitorAt ms p)
+       else return (clampMonitor ms (idxOf cfg))
 
 -- | Draw the tray surface and shrink-wrap/position its SDL window at
 -- the configured screen corner.
@@ -73,17 +96,21 @@ drawTraySurface app = do
   let surf = surfacesTray (appSurfaces app)
   state <- readTVarIO (appNotify app)
   let config = notiConfig state
+      theme = appTheme app
   V2 surfW surfH <- surfaceWindowSize surf
   winPos <- SDL3.windowPosition (sWindow surf)
-  (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config
-    (appKeyboard app) (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
+  (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config theme
+    (appKeyboard app) (sMainFont surf)
+    (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
     winPos (appScreenSize app)
-  let (sw, sh) = appScreenSize app
+  mon <- monitorFor app config configTrayMonitor configTrayFollowMouse
+  let (mx, my) = (monX mon, monY mon)
+      (mw, mh) = (monW mon, monH mon)
       (x, y) = case configTrayPosition config of
-        "top-left" -> (10, 10)
-        "bottom-left" -> (10, sh - 10 - floor h)
-        "bottom-right" -> (sw - 10 - floor w, sh - 10 - floor h)
-        _ -> (sw - 10 - floor w, 10)
+        "top-left" -> (mx + 10, my + 10)
+        "bottom-left" -> (mx + 10, my + mh - 10 - floor h)
+        "bottom-right" -> (mx + mw - 10 - floor w, my + mh - 10 - floor h)
+        _ -> (mx + mw - 10 - floor w, my + 10)
   resizeSurfaceWindow surf (floor w + 2) (floor h + 2)
   moveSurfaceWindow surf x y
   debug <- lookupEnv "HOMGB_DEBUG"
@@ -98,8 +125,10 @@ drawTraySurface app = do
     Nothing -> return ()
 
 -- | Draw notification popups in their own surface window, placed at
--- the configured top corner of the screen. The surface hides when no
--- popups are live.
+-- the configured corner of the target monitor. The surface hides when
+-- no popups are live. Modification rules can override a popup's
+-- margin-top (restarts the stack at that root y) and margin-right
+-- (shifts that popup; the surface hugs the union of all popups).
 drawPopupSurface :: AppState -> IO ()
 drawPopupSurface app = do
   let surf = surfacesPopups (appSurfaces app)
@@ -116,25 +145,39 @@ drawPopupSurface app = do
       pruneCache app (map notiId notis)
       heights <- readTVarIO (appHeights app)
       let width = configWidthNoti config
-          startY = 2
-      total <- go tState config width startY heights notis
-      let (sw, _) = appScreenSize app
-          x = sw - configDistanceRight config - width - 2
-          y = configDistanceTop config
-      resizeSurfaceWindow surf (width + 4) (floor total + 4)
-      moveSurfaceWindow surf x y
+      mon <- monitorFor app config configNotiMonitor configNotiFollowMouse
+      let -- every popup's ideal root x (modification margin-right can
+          -- shift individual popups); the surface spans their union
+          idealX n = monX mon + monW mon
+            - fromMaybe (configDistanceRight config) (notiRight n) - width - 2
+          surfX = minimum (map idealX notis)
+          surfW = maximum [ idealX n + width + 4 | n <- notis ] - surfX
+          -- margin-top overrides are ROOT y positions; the surface
+          -- top hugs the highest popup so overrides move the window,
+          -- not just the content
+          rootTop n = fromMaybe (configDistanceTop config) (notiTop n)
+          baseTop = minimum (configDistanceTop config : map rootTop notis)
+      total <- go tState config surfX baseTop
+                 (map idealX notis) (map rootTop notis) heights notis
+      resizeSurfaceWindow surf surfW (floor total + 4)
+      moveSurfaceWindow surf surfX (monY mon + baseTop)
       debug <- lookupEnv "HOMGB_DEBUG"
       case debug of
         Just _ -> hPutStrLn stderr
-          $ "popup surface=(" ++ show x ++ "," ++ show y ++ ") h="
-            ++ show (floor total :: Int)
+          $ "popup surface=(" ++ show surfX ++ "," ++ show (monY mon + baseTop)
+            ++ ") h=" ++ show (floor total :: Int)
         Nothing -> return ()
   where
-    go _ _ _ py _ [] = return py
-    go tState config width py heights (n:rest) = do
-      h <- renderPopup app tState config py
+    go _ _ _ _ _ _ _ [] = return 2
+    go tState config surfX baseTop (ix:ixs) (rt:rts) heights (n:rest) = do
+      let localTop = fromIntegral (rt - baseTop) + 2
+          localX = fromIntegral (ix - surfX) + 2
+      h <- renderPopup app tState config localX localTop
              (Map.findWithDefault (fallbackHeight config) (notiId n) heights) n
-      go tState config width (py + h + fromIntegral (configDistanceBetween config)) heights rest
+      below <- go tState config surfX baseTop ixs rts heights rest
+      return (max below (localTop + h
+        + fromIntegral (configDistanceBetween config)))
+    go _ _ _ _ _ _ _ (_:_) = return 2
 
 -- | deadd's timeout semantics (NotificationPopup.startTimeoutThread):
 --   0 = never expires, >0 = that many milliseconds, <0 = configured default.
@@ -167,21 +210,23 @@ drawMenusSurface app = do
   let surf = surfacesMenus (appSurfaces app)
       env = appTray app
   mFrame <- renderMenus (trayClient env) (trayMenus env)
-    (trayPrevButtons env) (trayDisplay env)
+    (trayPrevButtons env) (trayDisplay env) (appTheme app)
     =<< SDL3.windowPosition (sWindow surf)
   case mFrame of
     Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
     Just f -> do
-      -- keep the whole menu on screen: with the tray at the right
+      -- keep the whole menu on its monitor: with the tray at the right
       -- edge the cursor-anchored position would push the surface off
-      let (sw, sh) = appScreenSize app
-          (px, py) = mfRootPos f
+      let (px, py) = mfRootPos f
           (mw, mh) = mfSize f
-          x = if floor px + ceiling mw > sw - 4
-                then max 0 (sw - 4 - ceiling mw)
+          mon = monitorAt (appMonitors app) (floor px, floor py)
+          (bx, by) = (monX mon, monY mon)
+          (bw, bh) = (monW mon, monH mon)
+          x = if floor px + ceiling mw > bx + bw - 4
+                then max bx (bx + bw - 4 - ceiling mw)
                 else floor px
-          y = if floor py + ceiling mh > sh - 4
-                then max 0 (sh - 4 - ceiling mh)
+          y = if floor py + ceiling mh > by + bh - 4
+                then max by (by + bh - 4 - ceiling mh)
                 else floor py
       -- move BEFORE show: the WM places a freshly mapped window
       -- itself (xmonad centers it), and mapping at the target avoids
@@ -196,7 +241,6 @@ drawCenterSurface :: AppState -> IO ()
 drawCenterSurface app = do
   let surf = surfacesCenter (appSurfaces app)
       tState = appNotify app
-      (sw, sh) = appScreenSize app
   forM_ (trayDisplay (appTray app)) $ \dpy -> showSurface dpy surf
   state <- readTVarIO tState
   let config = notiConfig state
@@ -204,9 +248,11 @@ drawCenterSurface app = do
       history =
         (if configNotiCenterNewFirst config then id else reverse)
           (notiHistory state)
-      x = sw - width - configRightMargin config
-      y = configBarHeight config
-  resizeSurfaceWindow surf width (sh - y - configBottomBarHeight config)
+  mon <- monitorFor app config configNotiCenterMonitor configNotiCenterFollowMouse
+  let x = monX mon + monW mon - width - configRightMargin config
+      y = monY mon + configBarHeight config
+      h = monH mon - configBarHeight config - configBottomBarHeight config
+  resizeSurfaceWindow surf width h
   moveSurfaceWindow surf x y
   V2 surfW surfH <- surfaceWindowSize surf
   let winFlags = foldl1 combineFlags
@@ -250,13 +296,12 @@ drawCenterSurface app = do
       Nothing -> return ()
   end
 
--- | Draw one popup at local x=2 (the surface window hugs the popup
--- stack, so no window-width math is needed here).
-renderPopup :: AppState -> TVar NotifyState -> Config -> Float -> Float
+-- | Draw one popup at local (x, top) inside the popup surface.
+renderPopup :: AppState -> TVar NotifyState -> Config -> Float -> Float -> Float
             -> Notification -> IO Float
-renderPopup app tState config top heightGuess noti = do
-  let width = fromIntegral (configWidthNoti config)
-      popupX = 2
+renderPopup app tState config popupX top heightGuess noti = do
+  let theme = appTheme app
+      width = fromIntegral (configWidthNoti config)
       popupFlags = foldl1 combineFlags
         [ ImGuiWindowFlags_NoTitleBar
         , ImGuiWindowFlags_NoResize
@@ -267,72 +312,75 @@ renderPopup app tState config top heightGuess noti = do
         , ImGuiWindowFlags_NoFocusOnAppearing
         ]
 
-  withImVec4 (urgencyBorder (notiUrgency noti)) $ \borderPtr ->
-    withImVec4 (urgencyBg (notiUrgency noti)) $ \bgPtr -> do
-      Raw.pushStyleColor ImGuiCol_Border borderPtr
-      Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+  withImVec4 (themePopupBorder theme (notiUrgency noti)) $ \borderPtr ->
+    withImVec4 (themePopupBg theme (notiUrgency noti)) $ \bgPtr ->
+      withImVec2 (ImVec2 (thPopupPadX theme) (thPopupPadY theme)) $ \padPtr -> do
+        Raw.pushStyleColor ImGuiCol_Border borderPtr
+        Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+        Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
 
-      withImVec2 (ImVec2 popupX top) $ \posPtr ->
-        withImVec2 (ImVec2 0 0) $ \pivotPtr ->
-          Raw.setNextWindowPos posPtr ImGuiCond_Always (Just pivotPtr)
-      withImVec2 (ImVec2 width 0) $ \sizePtr ->
-        Raw.setNextWindowSize sizePtr ImGuiCond_Always
-      beginVisible <- BS.useAsCString (T.encodeUtf8 (windowLabel (notiId noti)))
-        $ \label -> Raw.begin label Nothing (Just popupFlags)
+        withImVec2 (ImVec2 popupX top) $ \posPtr ->
+          withImVec2 (ImVec2 0 0) $ \pivotPtr ->
+            Raw.setNextWindowPos posPtr ImGuiCond_Always (Just pivotPtr)
+        withImVec2 (ImVec2 width 0) $ \sizePtr ->
+          Raw.setNextWindowSize sizePtr ImGuiCond_Always
+        beginVisible <- BS.useAsCString (T.encodeUtf8 (windowLabel (notiId noti)))
+          $ \label -> Raw.begin label Nothing (Just popupFlags)
 
-      when beginVisible $ do
-        withImVec4 (urgencyTitle (notiUrgency noti)) $ \titlePtr -> do
-          Raw.pushStyleColor ImGuiCol_Text titlePtr
-          text (notiSummary noti)
-          popStyleColor 1
-        Raw.sameLine
-        closeClicked <- smallButton "x##close"
-        when closeClicked $
-          closeNotiById tState (notiId noti) User
+        when beginVisible $ do
+          withImVec4 (themePopupTitle theme (notiUrgency noti)) $ \titlePtr -> do
+            Raw.pushStyleColor ImGuiCol_Text titlePtr
+            text (notiSummary noti)
+            popStyleColor 1
+          Raw.sameLine
+          closeClicked <- smallButton "x##close"
+          when closeClicked $
+            closeNotiById tState (notiId noti) User
 
-        forM_ (notiPercentage noti) $ \p ->
-          progressBar (realToFrac p / 100) Nothing
+          forM_ (notiPercentage noti) $ \p ->
+            progressBar (realToFrac p / 100) Nothing
 
-        -- Body is plain text in M1 (no body-markup capability). A
-        -- rich-text renderer would slot in here (design decision 5).
-        unless (T.null (notiBody noti) && configPopupHideBodyIfEmpty config) $ do
-          Raw.spacing
-          textWrapped (notiBody noti)
+          -- Body is plain text in M1 (no body-markup capability). A
+          -- rich-text renderer would slot in here (design decision 5).
+          unless (T.null (notiBody noti) && configPopupHideBodyIfEmpty config) $ do
+            Raw.spacing
+            textWrapped (notiBody noti)
 
-        mTex <- case notiImg noti of
-          RawImg argb | isRgba8 argb -> do
-            cache <- readTVarIO (appTextures app)
-            case Map.lookup (notiId noti) cache of
-              Just tex -> return (Just tex)
-              Nothing -> do
-                tex <- uploadRgba (rawImgRgba argb)
-                atomically $ modifyTVar' (appTextures app)
-                  $ Map.insert (notiId noti) tex
-                return (Just tex)
-          _ -> return Nothing
-        forM_ mTex $ \tex -> do
-          Raw.spacing
-          let imgPx = fromIntegral (notiImgSize noti)
-          drawImage tex imgPx imgPx
+          mTex <- case notiImg noti of
+            RawImg argb | isRgba8 argb -> do
+              cache <- readTVarIO (appTextures app)
+              case Map.lookup (notiId noti) cache of
+                Just tex -> return (Just tex)
+                Nothing -> do
+                  tex <- uploadRgba (rawImgRgba argb)
+                  atomically $ modifyTVar' (appTextures app)
+                    $ Map.insert (notiId noti) tex
+                  return (Just tex)
+            _ -> return Nothing
+          forM_ mTex $ \tex -> do
+            Raw.spacing
+            let imgPx = fromIntegral (notiImgSize noti)
+            drawImage tex imgPx imgPx
 
-        renderActions tState noti
+          renderActions tState noti
 
-      ImVec2 _ h <- getWindowSize
-      end
-      popStyleColor 2
+        ImVec2 _ h <- getWindowSize
+        end
+        popStyleVar 1
+        popStyleColor 2
 
-      -- Remember measured height for next frame's stacking; fall back to
-      -- an estimate until the first frame for this popup has been drawn.
-      let h' = max h heightGuess
-      atomically $ modifyTVar' (appHeights app) $ Map.insert (notiId noti) h'
-      debug <- lookupEnv "HOMGB_DEBUG"
-      case debug of
-        Just _ -> hPutStrLn stderr
-          $ "popup " ++ show (notiId noti) ++ " pos=(" ++ show popupX ++ "," ++ show top
-            ++ ") h=" ++ show h
-        Nothing -> return ()
-      hFlush stderr
-      return h'
+        -- Remember measured height for next frame's stacking; fall back to
+        -- an estimate until the first frame for this popup has been drawn.
+        let h' = max h heightGuess
+        atomically $ modifyTVar' (appHeights app) $ Map.insert (notiId noti) h'
+        debug <- lookupEnv "HOMGB_DEBUG"
+        case debug of
+          Just _ -> hPutStrLn stderr
+            $ "popup " ++ show (notiId noti) ++ " pos=(" ++ show popupX ++ "," ++ show top
+              ++ ") h=" ++ show h
+          Nothing -> return ()
+        hFlush stderr
+        return h'
 
 renderActions :: TVar NotifyState -> Notification -> IO ()
 renderActions tState noti =
@@ -387,21 +435,6 @@ isRgba8 (imgW, imgH, rowstride, _, bits, channels, dat) =
 rawImgRgba :: (Int32, Int32, Int32, Bool, Int32, Int32, BS.ByteString) -> SizedRgba
 rawImgRgba (imgW, imgH, _, _, _, _, dat) =
   SizedRgba (fromIntegral imgW) (fromIntegral imgH) (argbToRgba dat)
-
-urgencyBg :: Urgency -> ImVec4
-urgencyBg Normal = ImVec4 0.13 0.14 0.15 1.0
-urgencyBg Low    = ImVec4 0.10 0.10 0.11 1.0
-urgencyBg High   = ImVec4 0.16 0.11 0.11 1.0
-
-urgencyBorder :: Urgency -> ImVec4
-urgencyBorder Normal = ImVec4 0.25 0.26 0.28 1.0
-urgencyBorder Low    = ImVec4 0.20 0.20 0.22 1.0
-urgencyBorder High   = ImVec4 0.80 0.20 0.20 1.0
-
-urgencyTitle :: Urgency -> ImVec4
-urgencyTitle Normal = ImVec4 0.90 0.90 0.90 1.0
-urgencyTitle Low    = ImVec4 0.75 0.75 0.75 1.0
-urgencyTitle High   = ImVec4 0.95 0.40 0.40 1.0
 
 windowLabel :: Int -> T.Text
 windowLabel id' = "noti-" <> T.pack (show id')

@@ -5,6 +5,8 @@ module Homgb.Config
   ( Config(..)
   , ButtonConfig(..)
   , ModificationRule(..)
+  , ThemeConfig(..)
+  , defaultThemeConfig
   , getConfig
   , defaultConfigText
   ) where
@@ -136,6 +138,11 @@ data Config = Config
   , configTrayIconSize :: Int
   , configTraySpacing :: Int
   , configTrayPosition :: String
+  , configTrayMonitor :: Int
+  , configTrayFollowMouse :: Bool
+
+  -- theming (raw @theme:@ section; see Homgb.Theme)
+  , configTheme :: ThemeConfig
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -221,8 +228,10 @@ instance FromJSON Config where
     True
   -- configNotiCenterHideOnMouseLeave
     <*> secondLevel o "notification-center" "hide-on-mouse-leave" True
-  -- configNotiDefaultTimeout
-    <*> thirdLevel o "notification" "popup" "default-timeout" 1000
+  -- configNotiDefaultTimeout (deadd README documents 10000ms; the
+  -- code fallback there is 1000, which makes popups vanish in a
+  -- second — use the documented value)
+    <*> thirdLevel o "notification" "popup" "default-timeout" 10000
   -- configDistanceTop
     <*> inheritingThirdLevel o "notification" "popup" "margin-top" 50
   -- configDistanceRight
@@ -272,6 +281,12 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "spacing" 4
   -- configTrayPosition
     <*> secondLevel o "tray" "position" "top-right"
+  -- configTrayMonitor
+    <*> secondLevel o "tray" "monitor" 0
+  -- configTrayFollowMouse
+    <*> secondLevel o "tray" "follow-mouse" False
+  -- configTheme
+    <*> firstLevel o "theme" defaultThemeConfig
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -289,6 +304,96 @@ instance FromJSON ButtonConfig where
         <$> o .: "label"
         <*> o .: "command"
   parseJSON _ = fail "Expected Object for ButtonConfig"
+
+-- | Raw @theme:@ config section. Every field optional; 'Homgb.Theme.mkTheme'
+-- merges it over the built-in defaults. Kept here (not in Homgb.Theme)
+-- because Config carries it and Theme imports Config.
+data ThemeConfig = ThemeConfig
+  { tcFontFamily :: Maybe Text.Text
+  , tcFontSize :: Maybe Float
+  , tcFontCyrillic :: Maybe Bool
+  , tcColors :: Map.Map Text.Text Text.Text
+  , tcTrayIconSize :: Maybe Int
+  , tcTraySpacing :: Maybe Int
+  , tcTrayPadX :: Maybe Float
+  , tcTrayPadY :: Maybe Float
+  , tcPopupPadX :: Maybe Float
+  , tcPopupPadY :: Maybe Float
+  , tcMenuPadX :: Maybe Float
+  , tcMenuPadY :: Maybe Float
+  }
+
+defaultThemeConfig :: ThemeConfig
+defaultThemeConfig = ThemeConfig
+  { tcFontFamily = Nothing
+  , tcFontSize = Nothing
+  , tcFontCyrillic = Nothing
+  , tcColors = Map.empty
+  , tcTrayIconSize = Nothing
+  , tcTraySpacing = Nothing
+  , tcTrayPadX = Nothing
+  , tcTrayPadY = Nothing
+  , tcPopupPadX = Nothing
+  , tcPopupPadY = Nothing
+  , tcMenuPadX = Nothing
+  , tcMenuPadY = Nothing
+  }
+
+instance FromJSON ThemeConfig where
+  parseJSON (Y.Object o) = do
+    font <- o .:? "font"
+    (ffam, fsz, fcyr) <- case font of
+      Nothing -> return (Nothing, Nothing, Nothing)
+      Just (Y.Object f) ->
+        (,,) <$> f .:? "family" <*> f .:? "size" <*> f .:? "cyrillic"
+      Just _ -> fail "Expected Object for theme.font"
+    colors <- o .:? "colors" .!= Map.empty
+    sizes <- o .:? "sizes"
+    (tpx, tpy, ppx, ppy, mpx, mpy) <- case sizes of
+      Nothing -> return (Nothing, Nothing, Nothing, Nothing, Nothing, Nothing)
+      Just (Y.Object s) -> do
+        tray <- s .:? "tray"
+        (tx, ty) <- case tray of
+          Nothing -> return (Nothing, Nothing)
+          Just (Y.Object t) -> (,) <$> t .:? "padding-x" <*> t .:? "padding-y"
+          Just _ -> fail "Expected Object for theme.sizes.tray"
+        popup <- s .:? "popup"
+        (px, py) <- case popup of
+          Nothing -> return (Nothing, Nothing)
+          Just (Y.Object p) -> (,) <$> p .:? "padding-x" <*> p .:? "padding-y"
+          Just _ -> fail "Expected Object for theme.sizes.popup"
+        menu <- s .:? "menu"
+        (mx, my) <- case menu of
+          Nothing -> return (Nothing, Nothing)
+          Just (Y.Object m) -> (,) <$> m .:? "padding-x" <*> m .:? "padding-y"
+          Just _ -> fail "Expected Object for theme.sizes.menu"
+        return (tx, ty, px, py, mx, my)
+      Just _ -> fail "Expected Object for theme.sizes"
+    ThemeConfig
+      <$> pure ffam
+      <*> pure fsz
+      <*> pure fcyr
+      <*> pure colors
+      <*> sizeOf "tray" "icon-size"
+      <*> sizeOf "tray" "spacing"
+      <*> pure tpx
+      <*> pure tpy
+      <*> pure ppx
+      <*> pure ppy
+      <*> pure mpx
+      <*> pure mpy
+    where
+      -- theme.sizes.<section>.<key>
+      sizeOf section key = do
+        msizes <- o .:? "sizes"
+        case msizes of
+          Just (Y.Object s) -> do
+            msec <- s .:? AesonKey.fromText section
+            case msec of
+              Just (Y.Object sec) -> sec .:? AesonKey.fromText key
+              _ -> return Nothing
+          _ -> return Nothing
+  parseJSON _ = fail "Expected Object for ThemeConfig"
 
 getConfig :: Text.Text -> IO Config
 getConfig configYml = Y.decodeThrow $ encodeUtf8 configYml
@@ -317,7 +422,7 @@ defaultConfigText = Text.pack $ unlines
   , "  app-icon:"
   , "    guess-icon-from-name: true"
   , "  popup:"
-  , "    default-timeout: 10"
+  , "    default-timeout: 10000"
   , "    margin-top: 50"
   , "    margin-right: 50"
   , "    margin-between: 20"
@@ -345,6 +450,35 @@ defaultConfigText = Text.pack $ unlines
   , "  icon-size: 22"
   , "  spacing: 4"
   , "  position: top-right"
+  , "  monitor: 0"
+  , "  follow-mouse: false"
+  , "theme:"
+  , "  font:"
+  , "    family: \"Noto Sans\""
+  , "    size: 28"
+  , "    cyrillic: true"
+  , "  colors:"
+  , "    popup.bg: \"#212227\""
+  , "    popup.bg-low: \"#1a1a1c\""
+  , "    popup.bg-critical: \"#291c1c\""
+  , "    popup.border: \"#40434a\""
+  , "    popup.border-low: \"#333338\""
+  , "    popup.border-critical: \"#cc3333\""
+  , "    popup.title: \"#e6e6e6\""
+  , "    popup.title-low: \"#bfbfbf\""
+  , "    popup.title-critical: \"#f26666\""
+  , "    menu.bg: \"#333a52\""
+  , "    menu.border: \"#8c9ec7\""
+  , "  sizes:"
+  , "    tray:"
+  , "      padding-x: 8"
+  , "      padding-y: 8"
+  , "    popup:"
+  , "      padding-x: 8"
+  , "      padding-y: 8"
+  , "    menu:"
+  , "      padding-x: 8"
+  , "      padding-y: 8"
   , "keyboard:"
   , "  layouts: []"
   , "  indicator: true"

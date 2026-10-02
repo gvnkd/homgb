@@ -13,8 +13,10 @@ library
   exposed-modules:     Homgb
                      , Homgb.State
                      , Homgb.Render
-                     , Homgb.Config
-                     , Homgb.Helpers
+                      , Homgb.Config
+                      , Homgb.Theme
+                      , Homgb.Monitors
+                      , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.WMProps
                       , Homgb.SDL3

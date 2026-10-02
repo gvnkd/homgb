@@ -51,6 +51,10 @@ data Surface = Surface
     -- switched between SDL windows and present on both (clear test
     -- proved it), and no sharing is needed because textures are
     -- uploaded only under the owning surface's context
+  , sMainFont :: Ptr ()
+    -- ^ the theme font added to this context's atlas (nullPtr when no
+    -- font is configured); lets widgets PushFont(font, size) for
+    -- size-matched text (e.g. the tray layout indicator)
   , sWindowId :: Word32
     -- ^ SDL_WindowID for event routing
   , sShown :: TVar Bool
@@ -85,6 +89,7 @@ createSurface name (V2 w h) = do
     , sWindow = window
     , sContext = ctx
     , sGLContext = glCtx
+    , sMainFont = nullPtr
     , sWindowId = wid
     , sShown = shown
     , sLastPos = lastPos

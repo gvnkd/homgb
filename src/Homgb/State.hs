@@ -7,8 +7,10 @@ import Graphics.GL (GLuint)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 
 import Homgb.Keyboard (KeyboardEnv)
+import Homgb.Monitors (Monitor)
 import Homgb.Notifications.Daemon (NotifyState)
 import Homgb.Surface (Surfaces)
+import Homgb.Theme (Theme)
 import Homgb.Tray (TrayEnv)
 
 data AppState = AppState
@@ -21,16 +23,23 @@ data AppState = AppState
   , appKeyboard :: Maybe KeyboardEnv
   , appSurfaces :: Surfaces
   , appScreenSize :: (Int, Int)
-    -- ^ primary X screen size, for surface positioning
+    -- ^ primary X screen size, fallback monitor geometry
+  , appMonitors :: [Monitor]
+    -- ^ Xinerama monitor list (single entry on single-screen setups)
+  , appPointer :: TVar (Int, Int)
+    -- ^ last polled pointer root coordinates (for follow-mouse)
+  , appTheme :: Theme
   , appCenterVisible :: TVar Bool
     -- ^ notification center panel visibility (DBus ToggleCenter)
   }
 
 initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
-                -> Surfaces -> (Int, Int) -> TVar Bool -> IO AppState
-initialAppState tState tray kb surfaces screenSize centerVisible = do
+                -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
+                -> IO AppState
+initialAppState tState tray kb surfaces screenSize monitors theme centerVisible = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
+  pointer <- newTVarIO (0, 0)
   return AppState
     { appNotify = tState
     , appTextures = textures
@@ -39,5 +48,8 @@ initialAppState tState tray kb surfaces screenSize centerVisible = do
     , appKeyboard = kb
     , appSurfaces = surfaces
     , appScreenSize = screenSize
+    , appMonitors = monitors
+    , appPointer = pointer
+    , appTheme = theme
     , appCenterVisible = centerVisible
     }

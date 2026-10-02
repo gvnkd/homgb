@@ -38,10 +38,12 @@ import DBus.Internal.Types (BusName(..), ObjectPath)
 
 import DearImGui hiding (begin)
 import qualified DearImGui.Raw as Raw (begin, separator, getMousePos
-                                       , setNextWindowPos, pushStyleColor)
+                                       , setNextWindowPos, pushStyleColor
+                                       , pushStyleVar, popStyleVar)
 
 import StatusNotifier.Host.Service (ItemInfo(..))
 
+import Homgb.Theme (Theme(..))
 import Homgb.Tray.Menu.Client
 import Homgb.Tray.Menu.Tree
 
@@ -55,6 +57,8 @@ data MenuState = MenuState
   , msVisible :: Bool
   , msPos :: ImVec2
   , msOpenedAt :: POSIXTime
+  , msErrLogAt :: POSIXTime
+    -- ^ last time a GetLayout error was logged (rate limiting)
   }
 
 -- | Keyed by the item's bus name string; keeps the ItemInfo around so
@@ -107,6 +111,7 @@ openItemMenu client menus info trayWinPos trayH screenSize =
                 , msVisible = True
                 , msPos = pos
                 , msOpenedAt = now
+                , msErrLogAt = 0
                 })
               (hideOthers key m))
             return True
@@ -128,9 +133,9 @@ data MenuFrame = MenuFrame
 -- a menu on any mouse press outside its window; presses are detected
 -- by polling XQueryPointer (root coordinates) once per frame — ImGui's
 -- own mouse position goes stale once the pointer leaves our surfaces.
-renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display
+renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> Theme
             -> (Int, Int) -> IO (Maybe MenuFrame)
-renderMenus client menus prevButtons mDisplay winPos = do
+renderMenus client menus prevButtons mDisplay theme winPos = do
   (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
@@ -149,39 +154,42 @@ renderMenus client menus prevButtons mDisplay winPos = do
               ]
         withImVec2 (ImVec2 0 0) $ \posPtr ->
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-        -- tinted menu background (default is near-black); alpha < 1
-        -- keeps the desktop faintly visible under compositing
-        mRect <- withImVec4 (ImVec4 0.20 0.24 0.32 0.97) $ \bgPtr ->
-          withImVec4 (ImVec4 0.55 0.62 0.78 0.90) $ \borderPtr -> do
-            Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
-            Raw.pushStyleColor ImGuiCol_Border borderPtr
-            beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
-              $ \label -> Raw.begin label Nothing (Just menuFlags)
-            r <- if beginVisible
-              then do
-                rect <- windowRect
-                -- The root node (id 0) is virtual and may itself claim
-                -- "children-display: submenu" (steam does) - flatten.
-                forM_ (msTree st) $ \tree ->
-                  forM_ (lnChildren tree) $
-                    renderNode client menus key path info
-                -- Ignore the press that opened this menu (same frame /
-                -- fresh press right after opening).
-                let openedAgo = now - msOpenedAt st
-                when (pressed && openedAgo > 0.25) $ do
-                  -- rect is menu-surface-local, pointer is root (XQueryPointer)
-                  let (wx, wy) = winPos
-                      (rx, ry, rw, rh) = rect
-                      inside = fromIntegral rootX >= wx + floor rx
-                        && fromIntegral rootX < wx + ceiling (rx + rw)
-                        && fromIntegral rootY >= wy + floor ry
-                        && fromIntegral rootY < wy + ceiling (ry + rh)
-                  unless inside $ closeMenu menus key
-                return (Just rect)
-              else return Nothing
-            end
-            popStyleColor 2
-            return r
+        -- themed menu background (alpha < 1 keeps the desktop faintly
+        -- visible under compositing)
+        mRect <- withImVec4 (thMenuBg theme) $ \bgPtr ->
+          withImVec4 (thMenuBorder theme) $ \borderPtr ->
+            withImVec2 (ImVec2 (thMenuPadX theme) (thMenuPadY theme)) $ \padPtr -> do
+              Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+              Raw.pushStyleColor ImGuiCol_Border borderPtr
+              Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
+              beginVisible <- BS.useAsCString (T.encodeUtf8 (T.pack winId))
+                $ \label -> Raw.begin label Nothing (Just menuFlags)
+              r <- if beginVisible
+                then do
+                  rect <- windowRect
+                  -- The root node (id 0) is virtual and may itself claim
+                  -- "children-display: submenu" (steam does) - flatten.
+                  forM_ (msTree st) $ \tree ->
+                    forM_ (lnChildren tree) $
+                      renderNode client menus key path info
+                  -- Ignore the press that opened this menu (same frame /
+                  -- fresh press right after opening).
+                  let openedAgo = now - msOpenedAt st
+                  when (pressed && openedAgo > 0.25) $ do
+                    -- rect is menu-surface-local, pointer is root (XQueryPointer)
+                    let (wx, wy) = winPos
+                        (rx, ry, rw, rh) = rect
+                        inside = fromIntegral rootX >= wx + floor rx
+                          && fromIntegral rootX < wx + ceiling (rx + rw)
+                          && fromIntegral rootY >= wy + floor ry
+                          && fromIntegral rootY < wy + ceiling (ry + rh)
+                    unless inside $ closeMenu menus key
+                  return (Just rect)
+                else return Nothing
+              end
+              Raw.popStyleVar 1
+              popStyleColor 2
+              return r
         let ImVec2 px py = msPos st
             size = case mRect of
               Just (_, _, rw, rh) -> (rw, rh)
@@ -193,7 +201,6 @@ renderMenus client menus prevButtons mDisplay winPos = do
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
       ImGuiWindowFlags (a .|. b)
     withImVec2 v f = alloca $ \p -> poke p v >> f p
-    withImVec4 v f = alloca $ \p -> poke p v >> f p
     withImVec4 v f = alloca $ \p -> poke p v >> f p
     windowRect = do
       ImVec2 x y <- getWindowPos
@@ -272,10 +279,18 @@ fetchLayout client menus key = do
   m <- readTVarIO menus
   case Map.lookup key m of
     Nothing -> return ()
-    Just (info, path, _) -> do
+    Just (info, path, st) -> do
       result <- getLayout client (itemServiceName info) path 0
       case result of
-        Left err -> hPutStrLn stderr $ "menu GetLayout: " ++ show err
+        Left err -> do
+          -- steam/blueman can emit LayoutUpdated bursts; rate-limit
+          -- error logs to one per 5s so a misbehaving item can't spam
+          now <- getPOSIXTime
+          when (now - msErrLogAt st > 5) $ do
+            atomically $ modifyTVar' menus $
+              Map.adjust (\(i, p, s) ->
+                (i, p, s { msErrLogAt = now })) key
+            hPutStrLn stderr $ "menu GetLayout: " ++ show err
         Right (revision, layoutVar) ->
           case parseLayout layoutVar of
             Nothing -> hPutStrLn stderr "menu GetLayout: unparsable layout"
@@ -286,8 +301,8 @@ fetchLayout client menus key = do
                   ++ " children=" ++ show (length (lnChildren tree))
                 Nothing -> return ()
               atomically $ modifyTVar' menus $
-                Map.adjust (\(i, p, st) ->
-                  (i, p, st { msTree = Just tree, msRevision = revision })) key
+                Map.adjust (\(i, p, s) ->
+                  (i, p, s { msTree = Just tree, msRevision = revision })) key
 
 watch :: Client -> Menus -> String -> IO ()
 watch client menus key = do

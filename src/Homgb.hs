@@ -4,7 +4,7 @@ module Homgb (run) where
 
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO)
 import Control.Exception (bracket_)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (forM, forM_, unless, void)
 import Control.Monad.IO.Class
 import Control.Monad.Managed
 import Data.Word (Word32)
@@ -26,12 +26,14 @@ import Homgb.ImGui.SDL3 (initForOpenGL, shutdown)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (startKeyboard)
 import qualified Homgb.Keyboard.Xcb as Xcb
+import Homgb.Monitors (fallbackMonitor, getMonitors)
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Render
 import Homgb.SDL3 (GLContext)
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
+import Homgb.Theme (applyFont, mkTheme)
 import Homgb.Tray (TrayEnv(..), startTray)
 import Homgb.WMProps (WmClass(..))
 
@@ -39,16 +41,30 @@ run :: IO ()
 run = do
   SDL3.initializeVideo
   config <- loadConfig
+  theme <- mkTheme config
   tState <- startNotificationDaemon config
   tray <- startTray
   kb <- startKeyboard config
   screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
+  monitors <- case trayDisplay tray of
+    Just dpy -> getMonitors dpy screen
+    Nothing -> return (fallbackMonitor screen)
   centerVisible <- newTVarIO False
   startControl kb centerVisible
-  traySurf <- createSurface "homgb-tray" (V2 500 80)
-  popSurf <- createSurface "homgb-popups" (V2 340 200)
-  menuSurf <- createSurface "homgb-menu" (V2 360 560)
-  centerSurf <- createSurface "homgb-center" (V2 (configWidth config) 800)
+  surfs0 <- mapM (\(name, V2 w h) -> createSurface name (V2 w h))
+    [ ("homgb-tray", V2 500 80)
+    , ("homgb-popups", V2 340 200)
+    , ("homgb-menu", V2 360 560)
+    , ("homgb-center", V2 (configWidth config) 800)
+    ]
+  -- each surface context gets its own font atlas: add the theme font
+  -- to every context before the renderer builds the atlas, and keep
+  -- the ImFont* for explicit per-widget sizing
+  surfs <- forM surfs0 $ \s -> do
+    Raw.setCurrentContext (sContext s)
+    f <- applyFont theme
+    return s { sMainFont = f }
+  let [traySurf, popSurf, menuSurf, centerSurf] = surfs
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
@@ -62,7 +78,8 @@ run = do
   SDL3.hideWindow (sWindow menuSurf)
   SDL3.hideWindow (sWindow centerSurf)
   app <- initialAppState tState tray kb
-    (Surfaces traySurf popSurf menuSurf centerSurf) screen centerVisible
+    (Surfaces traySurf popSurf menuSurf centerSurf) screen monitors theme
+    centerVisible
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface
