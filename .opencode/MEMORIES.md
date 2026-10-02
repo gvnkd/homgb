@@ -35,6 +35,30 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   (Homgb.Monitors: Xinerama; monitor/follow-mouse keys for tray,
   popups, center).
 
+## Bar / xmobar replacement (phase 1: workspaces, 2026-10-02)
+
+- Homgb.Bar renders xmonad workspaces INSIDE the tray surface (left
+  edge): reads root _NET_DESKTOP_NAMES / _NET_CURRENT_DESKTOP via
+  Graphics.X11.Xlib.Extras (getWindowProperty8/32; X11 lib ALSO binds
+  sendEvent/allocaXEvent — no shim needed for reads), polled 5Hz in
+  frameUpkeep alongside the stacking re-assert. Clicking a workspace
+  sends the _NET_CURRENT_DESKTOP client message (C shim
+  homgb_set_current_desktop) — XMonad.Hooks.EwmhDesktops honors it;
+  NO xmonad.hs changes needed for the workspace part.
+- xmonad integration (~/.xmonad/xmonad.hs): xmobar spawnPipe +
+  dynamicLogWithPP removed, deadd spawnOnce commented, homgb started
+  via spawnOnce "/home/pion/bin/homgb-start &" — the launcher pgrep-
+  guards because spawnOnce RE-FIRES on `xmonad --restart` (a second
+  homgb would steal org.freedesktop.Notifications / the SNI watcher).
+  env-wrap only loads direnv env for the CWD (it does not cd): the
+  launcher cds to the project itself. trayer stays until homgb hosts
+  XEmbed icons (sunshine).
+- xmonad stacking facts (probed): WM_STATE presence does NOT prove a
+  window is managed (doIgnore'd windows keep it); xwininfo -root
+  -children lists TOP-first; floats stack by window-id order (menu
+  created LAST => topmost float); toggling struts off puts tiled apps
+  OVER unmanaged docks.
+
 ## Architecture
 
 One process:

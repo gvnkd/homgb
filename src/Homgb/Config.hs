@@ -140,9 +140,15 @@ data Config = Config
   , configTrayPosition :: String
   , configTrayMonitor :: Int
   , configTrayFollowMouse :: Bool
+  , configTrayBehindWindows :: Bool
+    -- ^ True: tray stays behind all windows (unclickable where
+    -- overlapped); False: normal panel stacking, above apps
 
   -- theming (raw @theme:@ section; see Homgb.Theme)
   , configTheme :: ThemeConfig
+
+  -- bar (xmobar replacement, rendered inside the tray surface)
+  , configBarWorkspaces :: Bool
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -285,8 +291,12 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "monitor" 0
   -- configTrayFollowMouse
     <*> secondLevel o "tray" "follow-mouse" False
+  -- configTrayBehindWindows
+    <*> secondLevel o "tray" "behind-windows" False
   -- configTheme
     <*> firstLevel o "theme" defaultThemeConfig
+  -- configBarWorkspaces
+    <*> secondLevel o "bar" "workspaces" True
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -452,6 +462,9 @@ defaultConfigText = Text.pack $ unlines
   , "  position: top-right"
   , "  monitor: 0"
   , "  follow-mouse: false"
+  , "  behind-windows: false"
+  , "bar:"
+  , "  workspaces: true"
   , "theme:"
   , "  font:"
   , "    family: \"Noto Sans\""

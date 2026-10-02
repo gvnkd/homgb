@@ -55,8 +55,9 @@ run = do
     -- menu is created LAST: xmonad stacks floats by window-id order,
     -- so the menu surface gets the topmost slot among homgb floats
     -- ("menu always on top", even over the center panel). The tray
-    -- maps lowered (raise=False) so it stays behind app windows.
-    [ ("homgb-tray", V2 500 80, False)
+    -- maps lowered when tray.behind-windows is set (it stays behind
+    -- all windows, unclickable where overlapped).
+    [ ("homgb-tray", V2 500 80, not (configTrayBehindWindows config))
     , ("homgb-popups", V2 340 200, True)
     , ("homgb-center", V2 (configWidth config) 800, True)
     , ("homgb-menu", V2 360 560, True)

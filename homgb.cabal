@@ -16,6 +16,7 @@ library
                       , Homgb.Config
                       , Homgb.Theme
                       , Homgb.Monitors
+                      , Homgb.Bar
                       , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.WMProps

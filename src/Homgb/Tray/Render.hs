@@ -33,6 +33,7 @@ import qualified DearImGui.Raw as Raw
   (imageButton, begin, setNextWindowPos, pushStyleColor
   , pushStyleVar, popStyleVar, getMousePos)
 import DearImGui.Raw.Font (Font(..))
+import Homgb.Bar (BarState, renderBar, sameLineS, framePadX, framePadY)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
@@ -44,29 +45,13 @@ import Homgb.Tray.Menu.Render (openItemMenu)
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 
--- | Analytic size constants matching ImGui's real layout (verified
--- by pixel-probing the rendered tray): an imageButton occupies
--- @btn + 2*framePadding@ on the row, items are separated by the
--- explicit SameLine spacing (theme traySpacing), the window padding
--- is the theme padding.
-framePadX, framePadY :: Float
-framePadX = 4
-framePadY = 4
-
--- | dear-imgui's 'Raw.sameLine' binds @SameLine()@ without the
--- spacing argument; go through the shim for theme-controlled gaps.
-sameLineS :: Float -> IO ()
-sameLineS sp = c_same_line (realToFrac sp)
-
-foreign import ccall "homgb_same_line" c_same_line :: CFloat -> IO ()
-
 -- | Draw the tray into the current (tray surface) ImGui context. The
 -- tray window sits at the surface's local origin; returns the measured
 -- content size so the caller can shrink-wrap the SDL window.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Theme
-           -> Maybe KeyboardEnv -> Ptr ()
+           -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
            -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTray env textures config theme kbEnv mainFont surfSize winPos screenSize = do
+renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenSize = do
   state <- readTVarIO (trayState env)
   dbg0 <- lookupEnv "HOMGB_DEBUG"
   case dbg0 of
@@ -97,25 +82,31 @@ renderTray env textures config theme kbEnv mainFont surfSize winPos screenSize =
     withImVec2 pivot $ \pivotPtr ->
       Raw.setNextWindowPos posPtr ImGuiCond_Always (Just pivotPtr)
   -- transparent window bg: only the icons/label should be visible
-  kbW <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
+  (kbW, barW) <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
     withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
       Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
       Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
       beginVisible <- BS.useAsCString "homgb-tray"
         $ \label -> Raw.begin label Nothing (Just trayFlags)
-      kbWidth <- if beginVisible
+      (kbWidth, barWidth) <- if beginVisible
         then do
+          barW0 <- case mBar of
+            Just barT -> renderBar' barT
+            Nothing -> return 0
+          when (barW0 > 0 && not (null items)) $
+            sameLineS barItemGap
           forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
             when (idx > 0) $ sameLineS traySpacing
             renderItem env textures theme iconSize btn traySpacing idx item surfSize
               winPos screenSize
-          renderIndicator kbEnv (configKbIndicator config) traySpacing
+          kbW0 <- renderIndicator kbEnv (configKbIndicator config) traySpacing
             mainFont btn (length items)
-        else return 0
+          return (kbW0, barW0)
+        else return (0, 0)
       end
       Raw.popStyleVar 1
       popStyleColor 1
-      return kbWidth
+      return (kbWidth, barWidth)
   -- Analytic size: ImGui windows are clipped to the host viewport
   -- (the SDL window), so measuring the window size inside feeds back
   -- and collapses it. The layout is fully determined instead: an
@@ -127,10 +118,17 @@ renderTray env textures config theme kbEnv mainFont surfSize winPos screenSize =
   let n = length items
       gaps = fromIntegral (max 0 (n - 1)) * traySpacing
       gapKb = if n > 0 && kbW > 0 then traySpacing else 0
+      gapBar = if n > 0 && barW > 0 then barItemGap else 0
       itemW = btn + 2 * framePadX
-      trayW = 2 * thTrayPadX theme + fromIntegral n * itemW + gaps + gapKb + kbW
+      trayW = 2 * thTrayPadX theme + barW + gapBar
+        + fromIntegral n * itemW + gaps + gapKb + kbW
       h = btn + 2 * framePadY + 2 * thTrayPadY theme
   return (trayW, h)
+  where
+    barItemGap = 12
+    renderBar' barT = case trayDisplay env of
+      Just dpy -> renderBar dpy barT theme (fromIntegral (thTraySpacing theme))
+      Nothing -> return 0
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
 -- Clicking rotates layouts, same as the hotkey. The label is drawn at

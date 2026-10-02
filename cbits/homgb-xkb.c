@@ -123,6 +123,23 @@ void homgb_x_map_lowered(Display *dpy, Window win) {
   XFlush(dpy);
 }
 
+/* Ask the WM to switch the current desktop (EWMH client message to
+ * the root window; XMonad's ewmh hook and most WMs honor it). */
+void homgb_set_current_desktop(Display *dpy, Window root, long index) {
+  Atom msg = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
+  XEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.xclient.type = ClientMessage;
+  ev.xclient.window = root;
+  ev.xclient.message_type = msg;
+  ev.xclient.format = 32;
+  ev.xclient.data.l[0] = index;
+  ev.xclient.data.l[1] = CurrentTime;
+  XSendEvent(dpy, root, False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+  XFlush(dpy);
+}
+
 void homgb_x_unmap(Display *dpy, Window win) {
   XUnmapWindow(dpy, win);
   XFlush(dpy);

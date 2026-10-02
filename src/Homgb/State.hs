@@ -7,6 +7,7 @@ import Graphics.GL (GLuint)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 import Data.Time.Clock.POSIX (POSIXTime)
 
+import Homgb.Bar (BarState, newBarState)
 import Homgb.Keyboard (KeyboardEnv)
 import Homgb.Monitors (Monitor)
 import Homgb.Notifications.Daemon (NotifyState)
@@ -31,6 +32,8 @@ data AppState = AppState
     -- ^ last polled pointer root coordinates (for follow-mouse)
   , appStackTick :: TVar POSIXTime
     -- ^ last time the surface stacking was re-asserted (z-order)
+  , appBar :: TVar BarState
+    -- ^ cached EWMH desktop/workspace state (bar section)
   , appTheme :: Theme
   , appCenterVisible :: TVar Bool
     -- ^ notification center panel visibility (DBus ToggleCenter)
@@ -44,6 +47,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
   stackTick <- newTVarIO 0
+  bar <- newBarState
   return AppState
     { appNotify = tState
     , appTextures = textures
@@ -55,6 +59,7 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
     , appMonitors = monitors
     , appPointer = pointer
     , appStackTick = stackTick
+    , appBar = bar
     , appTheme = theme
     , appCenterVisible = centerVisible
     }

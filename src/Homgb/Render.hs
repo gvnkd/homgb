@@ -39,6 +39,7 @@ import qualified DearImGui.Raw as Raw
   , setNextWindowSize, showMetricsWindow, separator, beginChild, endChild
   , getMousePos, pushStyleVar)
 
+import Homgb.Bar (refreshBar)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
@@ -90,6 +91,7 @@ frameUpkeep app = do
       let surfs = appSurfaces app
       reassertStacking dpy (surfacesTray surfs)
       reassertStacking dpy (surfacesMenus surfs)
+      refreshBar dpy (appBar app)
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.
@@ -115,6 +117,7 @@ drawTraySurface app = do
   winPos <- SDL3.windowPosition (sWindow surf)
   (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config theme
     (appKeyboard app) (sMainFont surf)
+    (if configBarWorkspaces config then Just (appBar app) else Nothing)
     (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
     winPos (appScreenSize app)
   mon <- monitorFor app config configTrayMonitor configTrayFollowMouse
