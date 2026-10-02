@@ -127,7 +127,7 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
   where
     barItemGap = 12
     renderBar' barT = case trayDisplay env of
-      Just dpy -> renderBar dpy barT theme (fromIntegral (thTraySpacing theme))
+      Just dpy -> renderBar dpy barT config theme (fromIntegral (thTraySpacing theme))
       Nothing -> return 0
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).

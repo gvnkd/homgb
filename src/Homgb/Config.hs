@@ -149,6 +149,8 @@ data Config = Config
 
   -- bar (xmobar replacement, rendered inside the tray surface)
   , configBarWorkspaces :: Bool
+  , configBarWindows :: Bool
+    -- ^ taskbar: clickable windows of the current workspace
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -297,6 +299,8 @@ instance FromJSON Config where
     <*> firstLevel o "theme" defaultThemeConfig
   -- configBarWorkspaces
     <*> secondLevel o "bar" "workspaces" True
+  -- configBarWindows
+    <*> secondLevel o "bar" "windows" True
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -465,6 +469,7 @@ defaultConfigText = Text.pack $ unlines
   , "  behind-windows: false"
   , "bar:"
   , "  workspaces: true"
+  , "  windows: true"
   , "theme:"
   , "  font:"
   , "    family: \"Noto Sans\""

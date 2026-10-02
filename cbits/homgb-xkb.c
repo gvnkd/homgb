@@ -140,6 +140,24 @@ void homgb_set_current_desktop(Display *dpy, Window root, long index) {
   XFlush(dpy);
 }
 
+/* Ask the WM to focus a window (EWMH _NET_ACTIVE_WINDOW client
+ * message, source indication 1 = pager request; xmonad's ewmh hook
+ * honors it and brings the window's workspace into view). */
+void homgb_set_active_window(Display *dpy, Window root, Window win) {
+  Atom msg = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
+  XEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.xclient.type = ClientMessage;
+  ev.xclient.window = win;
+  ev.xclient.message_type = msg;
+  ev.xclient.format = 32;
+  ev.xclient.data.l[0] = 1;
+  ev.xclient.data.l[1] = CurrentTime;
+  XSendEvent(dpy, root, False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+  XFlush(dpy);
+}
+
 void homgb_x_unmap(Display *dpy, Window win) {
   XUnmapWindow(dpy, win);
   XFlush(dpy);
