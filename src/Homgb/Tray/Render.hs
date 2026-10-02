@@ -36,6 +36,7 @@ import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
   ( BarState, barActiveTitle, fitTitleWidth, renderClockWidget
   , renderDateWidget, renderWinButtons, renderWorkspaces
+  , measureWorkspaces, measureWinButtons
   , sameLineS, framePadX, framePadY )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
@@ -216,10 +217,10 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       Just dpy -> f dpy
       Nothing -> return 0
     -- Section widths; the flags say whether each renders at all.
+    -- Measure-only (no drawing): this runs before Begin.
     measureSections items btn traySpacing = do
       wsW <- case mBar of
-        Just barT -> withDpy $ \dpy ->
-          renderWorkspaces dpy barT config theme traySpacing
+        Just barT -> measureWorkspaces barT config traySpacing
         Nothing -> return 0
       titleW <- case mBar of
         Just barT -> do
@@ -232,8 +233,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               return tw
         Nothing -> return 0
       winW <- case mBar of
-        Just barT -> withDpy $ \dpy ->
-          renderWinButtons dpy barT config theme traySpacing (wsW > 0 || titleW > 0)
+        Just barT -> measureWinButtons barT config traySpacing
         Nothing -> return 0
       kbW <- measureIndicator
       let n = length items

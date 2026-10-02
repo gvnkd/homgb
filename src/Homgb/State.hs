@@ -34,6 +34,11 @@ data AppState = AppState
     -- ^ last time the surface stacking was re-asserted (z-order)
   , appBar :: TVar BarState
     -- ^ cached EWMH desktop/workspace state (bar section)
+  , appBarDirty :: TVar Bool
+    -- ^ set by the X event listener (startBarEvents): EWMH state
+    -- changed; the frame loop re-reads it and clears the flag
+  , appBarTick :: TVar POSIXTime
+    -- ^ last EWMH re-read (fallback re-sync every 5s)
   , appStrut :: TVar (Maybe (Int, Int, Int))
     -- ^ last _NET_WM_STRUT_PARTIAL written for the bar (depth, x0,
     -- x1); writes are suppressed while unchanged because each write
@@ -52,6 +57,8 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
   pointer <- newTVarIO (0, 0)
   stackTick <- newTVarIO 0
   bar <- newBarState
+  barDirty <- newTVarIO True
+  barTick <- newTVarIO 0
   strut <- newTVarIO Nothing
   return AppState
     { appNotify = tState
@@ -65,6 +72,8 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
     , appPointer = pointer
     , appStackTick = stackTick
     , appBar = bar
+    , appBarDirty = barDirty
+    , appBarTick = barTick
     , appStrut = strut
     , appTheme = theme
     , appCenterVisible = centerVisible

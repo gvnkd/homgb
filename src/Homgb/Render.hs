@@ -85,6 +85,10 @@ frameUpkeep app = do
   -- changes (xmonad puts the tray's float layer above tiled apps,
   -- KWin uses _NET_WM_STATE) — keep the tray behind everything and
   -- the menu above by re-lowering/re-raising shown surfaces.
+  -- The EWMH bar state, by contrast, is EVENT-DRIVEN: startBarEvents
+  -- (X event listener thread) sets appBarDirty; we re-read only then,
+  -- plus a slow 5s safety re-sync (covers what root selection cannot
+  -- see, e.g. client _NET_WM_NAME changes).
   now <- getPOSIXTime
   lastStack <- readTVarIO (appStackTick app)
   when (now - lastStack > 0.2) $ do
@@ -93,8 +97,15 @@ frameUpkeep app = do
       let surfs = appSurfaces app
       reassertStacking dpy (surfacesTray surfs)
       reassertStacking dpy (surfacesMenus surfs)
-      mStrut <- readTVarIO (appStrut app)
-      refreshBar dpy mStrut (appBar app)
+    dirty <- readTVarIO (appBarDirty app)
+    lastBar <- readTVarIO (appBarTick app)
+    when (dirty || now - lastBar > 5) $ do
+      atomically $ do
+        writeTVar (appBarTick app) now
+        writeTVar (appBarDirty app) False
+      forM_ (trayDisplay (appTray app)) $ \dpy -> do
+        mStrut <- readTVarIO (appStrut app)
+        refreshBar dpy mStrut (appBar app)
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.

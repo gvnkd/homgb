@@ -22,7 +22,7 @@ import System.FilePath ((</>))
 
 import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
-import Homgb.Bar (barCovered)
+import Homgb.Bar (barCovered, startBarEvents)
 import Homgb.ImGui.SDL3 (initForOpenGL, shutdown)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (startKeyboard)
@@ -86,6 +86,7 @@ run = do
   app <- initialAppState tState tray kb
     (Surfaces traySurf popSurf menuSurf centerSurf) screen monitors theme
     centerVisible
+  startBarEvents (appBarDirty app)
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface

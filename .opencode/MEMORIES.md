@@ -73,6 +73,14 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   Strut writes are change-suppressed via appStrut (every write
   re-runs avoidStruts). Title cap bar.window-title-max is PIXELS
   (fitTitleWidth binary-searches the ellipsis cut).
+- Bar auto-hide (barCovered): refreshBar intersects each
+  current-workspace window's geometry (getGeometry + waIsViewable —
+  MUST filter viewable: steam's 10x10 UNMAPPED stub windows are in
+  _NET_CLIENT_LIST and latched the bar hidden forever) with the bar's
+  strut rect; mainLoop hides the tray surface while covered
+  (ToggleStruts, Full layout, floats). drawTraySurface must
+  showSurface every frame (idempotent via sShown) — hiding used to be
+  one-way because the startup showSurface ran exactly once.
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu

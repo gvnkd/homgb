@@ -22,9 +22,12 @@ module Homgb.Bar
   , WinInfo(..)
   , newBarState
   , refreshBar
+  , startBarEvents
   , renderBar
   , renderWorkspaces
   , renderWinButtons
+  , measureWorkspaces
+  , measureWinButtons
   , barActiveTitle
   , renderClockWidget
   , renderDateWidget
@@ -34,10 +37,12 @@ module Homgb.Bar
   , framePadY
   ) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, writeTVar)
 import Control.Exception (IOException, catch)
-import Control.Monad (forM, when)
+import Control.Monad (forM, forM_, void, when)
+import Data.Bits ((.|.))
 import Data.Char (chr)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime, zonedTimeToLocalTime)
 import qualified Data.ByteString as BS
@@ -48,10 +53,11 @@ import Foreign.C.Types (CFloat(..), CLong(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import Graphics.X11.Types (Atom, Window)
+import Graphics.X11.Types (Atom, Window, propertyChangeMask, substructureNotifyMask)
 import Graphics.X11.Xlib.Types (Display(..))
 import Graphics.X11.Xlib.Atom (internAtom)
-import Graphics.X11.Xlib.Display (defaultRootWindow)
+import Graphics.X11.Xlib.Display (defaultRootWindow, openDisplay)
+import Graphics.X11.Xlib.Event (allocaXEvent, nextEvent, selectInput)
 import Graphics.X11.Xlib.Extras
   (getWindowProperty8, getWindowProperty32, getWindowAttributes
   , wa_map_state, waIsViewable)
@@ -59,6 +65,8 @@ import Graphics.X11.Xlib.Misc (getGeometry)
 import System.Posix.Process (getProcessID)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
+
+import Homgb.WMProps (installErrorHandler)
 
 import DearImGui hiding (begin)
 import qualified DearImGui.Raw as Raw (pushStyleColor)
@@ -91,6 +99,28 @@ newBarState :: IO (TVar BarState)
 newBarState = do
   pid <- fromIntegral <$> getProcessID
   newTVarIO (BarState pid (-1) [] 0 [] False)
+
+-- | Blocking X event listener on its OWN display (Xlib displays are
+-- not thread-safe; the render thread keeps trayDisplay). Selects
+-- root property changes (workspace/focus/client-list) and child
+-- map/unmap/configure on the root, and sets the dirty flag on every
+-- event — the frame loop re-reads the EWMH state only then, plus a
+-- slow 5s safety re-sync for what root selection cannot see (e.g.
+-- _NET_WM_NAME changes on client windows, which need per-window
+-- selection). This replaces the old unconditional 5Hz polling.
+startBarEvents :: TVar Bool -> IO ()
+startBarEvents dirty = do
+  mDpy <- catch (Just <$> openDisplay "")
+    (\(_ :: IOException) -> return Nothing)
+  forM_ mDpy $ \dpy -> do
+    installErrorHandler dpy
+    selectInput dpy (defaultRootWindow dpy)
+      (substructureNotifyMask .|. propertyChangeMask)
+    void $ forkIO $ forever' $ allocaXEvent $ \ev -> do
+      nextEvent dpy ev
+      atomically $ writeTVar dirty True
+  where
+    forever' act = act >> forever' act
 
 -- | Re-read the EWMH properties into the TVar. Cheap Xlib reads; call
 -- at a few Hz from the frame loop. Windows appearing/vanishing mid
@@ -326,6 +356,28 @@ renderWinButtons dpy st config theme gap follow = do
       clicked <- buttonHilite theme (wiXid win == barActiveWindow s) label
       when clicked $ activate dpy (wiXid win)
       buttonWidth label
+
+-- | Measure the workspace section's width WITHOUT rendering (the
+-- spacer math runs before Begin; drawing there triggers ImGui usage
+-- errors and the auto-opened Debug##Default window).
+measureWorkspaces :: TVar BarState -> Config -> Float -> IO Float
+measureWorkspaces st config gap = do
+  s <- readTVarIO st
+  if configBarWorkspaces config && not (null (barNames s))
+    then do
+      ws <- mapM buttonWidth (barNames s)
+      return (sum ws + fromIntegral (length ws - 1) * gap)
+    else return 0
+
+-- | Measure the taskbar window-buttons width without rendering.
+measureWinButtons :: TVar BarState -> Config -> Float -> IO Float
+measureWinButtons st config gap = do
+  s <- readTVarIO st
+  if configBarWindows config && not (null (barWindows s))
+    then do
+      ws <- mapM (buttonWidth . truncateTitle . wiTitle) (barWindows s)
+      return (sum ws + fromIntegral (length ws - 1) * gap)
+    else return 0
 
 buttonHilite :: Theme -> Bool -> T.Text -> IO Bool
 buttonHilite theme active label =
