@@ -110,9 +110,22 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   the window was withdrawn (during a hide->show cycle). Symptom:
   second show keeps the PREVIOUS content's size. Working pattern =
   drawPopupSurface (showSurface first, resize at the end); broken =
-  the tooltip's original resize->move->show. Also: auto-fit window
+  the tooltip's original resize->move->show.   Also: auto-fit window
   heights cannot be read mid-frame (getWindowSize returns the stale
   size during the frame) — analytic sizing only.
+- Font fallback chain (theme.font.fallbacks): candidates from
+  `fc-match -a`, pre-filtered by the sfnt directory (homgb
+  loadableFontFile: reject OTTO/CFF, ttcf, CBDT/CBLC/sbix; KEEP
+  variable fonts — stb ignores gvar and rasterizes the default
+  instance; NotoSans.ttf is variable and loads fine), merged with
+  ImFontConfig.MergeMode after the primary. CRITICAL: dear-imgui is
+  built with -DNDEBUG (cabal.project package stanza) so an
+  unparseable font returns NULL instead of ABORTING via IM_ASSERT —
+  without it, trying candidates is impossible. Nerd Fonts cover only
+  Private-Use-Area icons; real emoji (e.g. blueman's U+1F50B) need a
+  symbol font (Symbola works; Noto Color Emoji is CBDT-bitmap →
+  rejected; monochrome Noto Emoji is variable-and-stb-broken → NULL →
+  skipped). Nerd Font = icons for future bar widgets, NOT emoji.
 - xmonad stacking facts (probed): WM_STATE presence does NOT prove a
   window is managed (doIgnore'd windows keep it); xwininfo -root
   -children lists TOP-first; floats stack by window-id order (menu
