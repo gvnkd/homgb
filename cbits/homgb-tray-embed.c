@@ -14,11 +14,16 @@
 
 static Atom a_opcode, a_manager, a_visual, a_orient, a_xembed, a_tray_sel;
 
-/* Docked icon windows are created on _NET_SYSTEM_TRAY_VISUAL (the
- * tray window's visual — e.g. Telegram/Qt read the property and
- * create a 32-bit ARGB icon). A slot MUST use that same visual:
- * reparenting across depths is a BadMatch, which is exactly what the
- * laptop repro showed (request code 7, repeated dock failures). */
+/* Docked icon windows are reparented into slot children of the tray
+ * surface. Slots use the SCREEN DEFAULT visual, and
+ * _NET_SYSTEM_TRAY_VISUAL is deliberately NOT advertised: clients
+ * then create their icon on the default visual too, which is the
+ * only depth a slot can host. Advertising a 32-bit ARGB visual (the
+ * SDL window's) broke docking both ways on real systems: clients
+ * that honor the property made 32-bit icons, clients that don't
+ * (several Telegram builds) made 24-bit ones — a cross-depth
+ * reparent is a BadMatch either way (request code 7, the laptop
+ * repro). trayer does the same (no property, default visual). */
 static Visual *g_visual = NULL;
 static int g_depth = 0;
 static Colormap g_cmap = None;
@@ -99,34 +104,13 @@ int homgb_xembed_acquire(Display *dpy, Window parent, int screen,
   /* dock requests arrive as ClientMessages sent with the
    * StructureNotifyMask bit */
   XSelectInput(dpy, owner, StructureNotifyMask);
-  {
-    XWindowAttributes pattr;
-    if (XGetWindowAttributes(dpy, parent, &pattr) != 0) {
-      g_visual = pattr.visual;
-      g_depth = pattr.depth;
-      g_cmap = XCreateColormap(dpy, parent, g_visual, AllocNone);
-    }
-  }
+  g_visual = DefaultVisual(dpy, screen);
+  g_depth = DefaultDepth(dpy, screen);
+  g_cmap = DefaultColormap(dpy, screen);
   *owner_out = owner;
   *ts_out = ts;
   XFlush(dpy);
   return 1;
-}
-
-/* _NET_SYSTEM_TRAY_VISUAL: clients read it to pick the visual for
- * their icon windows (matters for ARGB icons). */
-void homgb_xembed_set_visual(Display *dpy, Window owner,
-                             unsigned long visualid) {
-  XChangeProperty(dpy, owner, a_visual, XA_VISUALID, 32, PropModeReplace,
-                  (unsigned char *)&visualid, 1);
-  XFlush(dpy);
-}
-
-unsigned long homgb_window_visualid(Display *dpy, Window w) {
-  XWindowAttributes attrs;
-  if (XGetWindowAttributes(dpy, w, &attrs) == 0)
-    return 0;
-  return (unsigned long)XVisualIDFromVisual(attrs.visual);
 }
 
 /* Dock `client` into a fresh slot window (child of the tray surface

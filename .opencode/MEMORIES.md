@@ -87,10 +87,14 @@
     inferiors go). Real clients recreate + re-dock (Qt semantics) —
     verified with a test client. homgb rejects docks of dead windows
     (XQueryTree parent check after reparent).
-  * Slot windows MUST be created on the tray window's visual (cached
-    in acquire): clients create their icon on _NET_SYSTEM_TRAY_VISUAL
-    (32-bit ARGB for the SDL tray) and cross-depth reparents are a
-    BadMatch (request code 7 — the laptop repro).
+  * Slot windows are created on the SCREEN DEFAULT visual and
+    _NET_SYSTEM_TRAY_VISUAL is deliberately NOT set (trayer does the
+    same). Advertising the SDL window's 32-bit ARGB visual broke
+    docks BOTH ways: honoring clients made 32-bit icons, non-honoring
+    ones (several Telegram builds) made 24-bit — any cross-depth
+    reparent is BadMatch (request code 7). No property => every
+    spec-aware client uses the default visual, the only depth a slot
+    can host.
   * Selection/MANAGER timestamps: real server timestamp from a dummy
     property change (grab_timestamp), never CurrentTime (ICCCM).
   * Only one XEmbed owner per screen: if trayer owns the selection,

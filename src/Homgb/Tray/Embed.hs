@@ -61,8 +61,6 @@ acquireTraySelection dpy trayWin = do
         "tray: XEmbed selection owned by another tray (trayer?); XEmbed icons disabled"
       return Nothing
     Just (o, ts) -> do
-      vis <- c_window_visualid dpy trayWin
-      c_set_visual dpy o vis
       atom <- c_opcode_atom dpy
       hPutStrLn stderr "tray: XEmbed host active"
       return (Just (EmbedState dpy trayWin ts atom))
@@ -135,10 +133,6 @@ layoutEmbedIcons env icons slotPos = do
 
 foreign import ccall "homgb_xembed_acquire" c_acquire
   :: Display -> Window -> Int -> Ptr Window -> Ptr CLong -> IO Int
-foreign import ccall "homgb_xembed_set_visual" c_set_visual
-  :: Display -> Window -> CLong -> IO ()
-foreign import ccall "homgb_window_visualid" c_window_visualid
-  :: Display -> Window -> IO CLong
 foreign import ccall "homgb_xembed_opcode_atom" c_opcode_atom
   :: Display -> IO CLong
 foreign import ccall "homgb_xembed_dock" c_dock
