@@ -79,6 +79,12 @@ data Theme = Theme
   -- status bar border (theme sizes.bar.border-size, 0 = off)
   , thBarBorder :: ImVec4
   , thBarBorderSize :: Float
+  -- status bar widget style: separator between left-section items,
+  -- bright color for the active/hovered item text, hover tint for
+  -- real buttons (keyboard indicator)
+  , thBarSeparator :: ImVec4
+  , thBarWsActive :: ImVec4
+  , thBarButtonHovered :: ImVec4
   -- sizes (icon size / spacing fall back to the legacy config keys)
   , thTrayIconSize :: Int
   , thTraySpacing :: Int
@@ -136,6 +142,9 @@ mkTheme config = do
     , thBarDate = color "bar.date" (ImVec4 0.55 0.58 0.62 1.0)
     , thBarBorder = color "bar.border" (ImVec4 0.43 0.43 0.50 0.50)
     , thBarBorderSize = fromMaybe 0 (tcBarBorderSize tc)
+    , thBarSeparator = color "bar.separator" (ImVec4 0.42 0.44 0.48 1.0)
+    , thBarWsActive = color "bar.ws-active" (ImVec4 0.95 0.95 0.95 1.0)
+    , thBarButtonHovered = color "bar.button-hovered" (ImVec4 1.0 1.0 1.0 0.10)
     , thTrayIconSize = fromMaybe (configTrayIconSize config) (tcTrayIconSize tc)
     , thTraySpacing = fromMaybe (configTraySpacing config) (tcTraySpacing tc)
     , thTrayPadX = fromMaybe 8 (tcTrayPadX tc)

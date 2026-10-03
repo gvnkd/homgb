@@ -37,7 +37,8 @@ import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
   ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
   , renderDateWidget, renderWinButtons, renderWorkspaces
-  , measureWorkspaces, measureWinButtons
+  , measureWorkspaces, measureWinButtons, renderSep, sepWidth
+  , centerCursorY
   , sameLineS, framePadX, framePadY )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
@@ -197,9 +198,10 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
           barW0 <- case mBar of
             Just barT -> do
               wsW <- withDpy $ \dpy ->
-                renderWorkspaces dpy barT config theme traySpacing
+                renderWorkspaces dpy barT config theme (btn + 2 * framePadY)
               winW <- withDpy $ \dpy ->
-                renderWinButtons dpy barT config theme traySpacing (wsW > 0)
+                renderWinButtons dpy barT config theme (btn + 2 * framePadY)
+                  (wsW > 0)
               return (wsW + winW)
             Nothing -> return 0
           when (barW0 > 0 && not (null items)) $
@@ -216,7 +218,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
               then sameLineS barItemGap
               else sameLineS traySpacing
             withImVec2 (ImVec2 itemW' btn) $ \szPtr -> Raw.dummy szPtr
-          kbW0 <- renderIndicator env kbEnv (configKbIndicator config)
+          kbW0 <- renderIndicator env kbEnv (configKbIndicator config) theme
             traySpacing mainFont btn (nAll > 0) winPos
           return (kbW0, barW0)
         else return (0, 0)
@@ -357,10 +359,10 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
     -- the space left by the fixed sections.
     measureSections items nEmbed btn traySpacing = do
       wsW <- case mBar of
-        Just barT -> measureWorkspaces barT config traySpacing
+        Just barT -> measureWorkspaces barT config
         Nothing -> return 0
       winW <- case mBar of
-        Just barT -> measureWinButtons barT config traySpacing
+        Just barT -> measureWinButtons barT config
         Nothing -> return 0
       kbW <- measureIndicator
       titleNatural <- case mBar of
@@ -383,16 +385,25 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       dateW <- do
         ImVec2 w _ <- calcTextSize "00.00" True 0
         return w
-      let hasTitle = titleNatural > 0
-          leftFlags = [wsW > 0, hasTitle, winW > 0]
+      sw <- sepWidth
+      let hasWs = wsW > 0
+          hasTitle = titleNatural > 0
+          hasWin = winW > 0
+          leftFlags = [hasWs, hasTitle, hasWin]
           rightFlags = [iconsW > 0, kbW > 0, clockW > 0, dateW > 0]
           leftN = length (filter id leftFlags)
           rightN = length (filter id rightFlags)
-          leftGaps = fromIntegral (max 0 (leftN - 1))
+          leftGaps = 0
+            -- left sections abut via separators (widths included in
+            -- the section sums), not traySpacing gaps
           rightGaps = fromIntegral (max 0 (rightN - 1))
           spacerGaps = if leftN > 0 && rightN > 0 then 2
                        else if leftN + rightN > 0 then 1 else 0
-          fixedLeft = wsW + winW
+          -- separators between the left sections themselves
+          crossSeps = (if hasWs && hasTitle then 1 else 0)
+            + (if (hasWs || hasTitle) && hasWin then 1 else 0)
+          crossSepW = fromIntegral crossSeps * sw
+          fixedLeft = wsW + winW + crossSepW
           rightTotal = iconsW + kbW + clockW + dateW + rightGaps * gap
           titleAvail = fromIntegral monW - 2 * thTrayPadX theme
             - fixedLeft - rightTotal - (leftGaps + spacerGaps) * gap
@@ -461,7 +472,12 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
           Just t -> do
             let capped = capTitleChars (configBarTitleMax config) t
             fitted <- fitTitleWidth (slTitleW sects) capped
-            sameLineS traySpacing
+            when wsRendered $ do
+              sameLineS 0
+              renderSep theme rowH
+              sameLineS 0
+            ImVec2 tw th <- calcTextSize fitted True 0
+            centerCursorY theme rowH th
             text fitted
             return True
       Nothing -> return False
@@ -470,7 +486,7 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
     if winOn then case mBar of
       Just barT -> do
         _ <- withDpy $ \dpy ->
-          renderWinButtons dpy barT config theme traySpacing
+          renderWinButtons dpy barT config theme rowH
             (wsRendered || titleRendered)
         return True
       Nothing -> return False
@@ -489,12 +505,13 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   forM_ (zip [0 :: Int ..] embeds) $ \(idx, _) -> do
     when (idx > 0 || not (null items)) $ sameLineS traySpacing
     withImVec2 (ImVec2 itemW btn) $ \szPtr -> Raw.dummy szPtr
-  _ <- renderIndicator env kbEnv (configKbIndicator config) traySpacing
+  _ <- renderIndicator env kbEnv (configKbIndicator config) theme traySpacing
          mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
          winPos
   _ <- renderDateWidget theme traySpacing
   void $ renderClockWidget theme traySpacing
   where
+    rowH = btn + 2 * framePadY
     withDpy f = case trayDisplay env of
       Just dpy -> f dpy
       Nothing -> fail "homgb: no X display (trayDisplay)"
@@ -504,9 +521,9 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
 -- a size fitted so its button height matches the icon row (btn), i.e.
 -- visually the same height as the tray icons. Returns the rendered
 -- width (0 when nothing is drawn).
-renderIndicator :: TrayEnv -> Maybe KeyboardEnv -> Bool -> Float -> Ptr ()
-                -> Float -> Bool -> (Int, Int) -> IO Float
-renderIndicator env kbEnv indicatorOn gap mainFont btn follow winPos =
+renderIndicator :: TrayEnv -> Maybe KeyboardEnv -> Bool -> Theme -> Float
+                -> Ptr () -> Float -> Bool -> (Int, Int) -> IO Float
+renderIndicator env kbEnv indicatorOn theme gap mainFont btn follow winPos =
   case kbEnv of
     Just kb | indicatorOn -> do
       -- the group itself is polled on a 1s deadline in frameUpkeep
@@ -530,11 +547,20 @@ renderIndicator env kbEnv indicatorOn gap mainFont btn follow winPos =
               return (if th0 > 0 then target * target / th0 else target)
         when haveFont $ pushFontWithSize (Font (castPtr mainFont)) (CFloat indSize)
         ImVec2 tw _ <- calcTextSize code True 0
-        clicked <- smallButton (code <> "##kbdlayout")
-        offerTooltip env "kbdlayout" [currentLayout s] winPos
-        when haveFont popFont
-        when clicked $ rotateLayout kb
-        return (tw + 2 * framePadX)
+        -- same widget style as the rest of the bar: transparent
+        -- button, subtle hover tint (the default Button color is the
+        -- light-blue ImGui style)
+        withImVec4 (ImVec4 0 0 0 0) $ \btnPtr ->
+          withImVec4 (thBarButtonHovered theme) $ \hovPtr -> do
+            Raw.pushStyleColor ImGuiCol_Button btnPtr
+            Raw.pushStyleColor ImGuiCol_ButtonHovered hovPtr
+            Raw.pushStyleColor ImGuiCol_ButtonActive hovPtr
+            clicked <- smallButton (code <> "##kbdlayout")
+            popStyleColor 3
+            offerTooltip env "kbdlayout" [currentLayout s] winPos
+            when haveFont popFont
+            when clicked $ rotateLayout kb
+            return (tw + 2 * framePadX)
     _ -> return 0
 
 renderItem :: TrayEnv -> TrayTextures -> Theme -> Float -> Float -> Float

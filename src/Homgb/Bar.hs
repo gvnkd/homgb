@@ -33,6 +33,9 @@ module Homgb.Bar
   , renderClockWidget
   , renderDateWidget
   , fitTitleWidth
+  , renderSep
+  , sepWidth
+  , centerCursorY
   , sameLineS
   , framePadX
   , framePadY
@@ -70,7 +73,7 @@ import System.IO (hPutStrLn, stderr)
 import Homgb.WMProps (installErrorHandler)
 
 import DearImGui hiding (begin, w)
-import qualified DearImGui.Raw as Raw (pushStyleColor)
+import qualified DearImGui.Raw as Raw (pushStyleColor, textColored, setCursorPos)
 
 import Homgb.Config (Config(..))
 import Homgb.Theme (Theme(..))
@@ -338,79 +341,138 @@ renderBar dpy st config theme gap = do
   winW <- renderWinButtons dpy st config theme gap showWs
   return (wsW + winW)
 
--- | Workspace buttons (left section). Returns the content width.
+-- | Workspace items (left section): "1 | 2 | 3" — text labels with
+-- full-row-height invisible click targets, separated by vertical
+-- lines. `rowH` is the icon-row advance (btn + 2*framePadding) used
+-- for vertical centering. Returns the content width.
 renderWorkspaces :: Display -> TVar BarState -> Config -> Theme -> Float
                  -> IO Float
-renderWorkspaces dpy st config theme gap = do
+renderWorkspaces dpy st config theme rowH = do
   s <- readTVarIO st
   if configBarWorkspaces config && not (null (barNames s))
-    then do
-      widths <- mapM (renderWs s) (zip [0 :: Int ..] (barNames s))
-      return (sum widths + fromIntegral (length widths - 1) * gap)
+    then go s (zip [0 :: Int ..] (barNames s))
     else return 0
   where
-    renderWs s (i, name) = do
-      when (i > 0) $ sameLineS gap
-      clicked <- buttonHilite theme (i == barCurrent s && i < length (barNames s)) name
+    go _ [] = return 0
+    go s ((i, name):rest) = do
+      when (i > 0) $ do
+        sameLineS 0
+        renderSep theme rowH
+        sameLineS 0
+      (w, clicked) <- barItem theme rowH ("ws-" <> T.pack (show i)) name
+        (i == barCurrent s && i < length (barNames s))
       when clicked $ switchTo dpy i
-      buttonWidth name
+      (w +) <$> go s rest
 
--- | Taskbar window buttons (clickable, current workspace).
--- follow=True chains the first button onto the previous section's
--- line. Returns the content width.
+-- | Taskbar window items (clickable, current workspace), same visual
+-- style as the workspaces. withSep renders a leading separator when a
+-- left section was already rendered. Returns the content width.
 renderWinButtons :: Display -> TVar BarState -> Config -> Theme -> Float -> Bool
                  -> IO Float
-renderWinButtons dpy st config theme gap follow = do
+renderWinButtons dpy st config theme rowH withSep = do
   s <- readTVarIO st
   if configBarWindows config && not (null (barWindows s))
     then do
-      widths <- mapM (renderWin s) (zip [0 :: Int ..] (barWindows s))
-      return (sum widths + fromIntegral (length widths - 1) * gap)
+      when withSep $ do
+        sameLineS 0
+        renderSep theme rowH
+        sameLineS 0
+      go s (zip [0 :: Int ..] (barWindows s))
     else return 0
   where
-    renderWin s (i, win) = do
-      when (follow || i > 0) $ sameLineS gap
+    go _ [] = return 0
+    go s ((i, win):rest) = do
+      when (i > 0) $ do
+        sameLineS 0
+        renderSep theme rowH
+        sameLineS 0
       let label = truncateTitle (wiTitle win)
-      clicked <- buttonHilite theme (wiXid win == barActiveWindow s) label
+      (w, clicked) <- barItem theme rowH
+        ("win-" <> T.pack (show (wiXid win)) <> "##" <> T.pack (show i)) label
+        (wiXid win == barActiveWindow s)
       when clicked $ activate dpy (wiXid win)
-      buttonWidth label
+      (w +) <$> go s rest
+
+-- | One clickable bar item: an invisible button spanning the full row
+-- height with the label vertically centered on it (mixed-height items
+-- on a SameLine row would otherwise top-align). Active/hovered labels
+-- draw in the theme's bright bar.ws-active color, others in the
+-- default text color. Returns (width, clicked).
+barItem :: Theme -> Float -> T.Text -> T.Text -> Bool -> IO (Float, Bool)
+barItem theme rowH key label active = do
+  ImVec2 tw th <- calcTextSize label True 0
+  let w = tw + 2 * framePadX
+  ImVec2 x0 y0 <- getCursorPos
+  clicked <- invisibleButton key (ImVec2 w rowH) ImGuiButtonFlags_None
+  hovered <- isItemHovered
+  withImVec2 (ImVec2 (x0 + framePadX) (y0 + max 0 (rowH - th) / 2))
+    $ \p -> Raw.setCursorPos p
+  if active || hovered
+    then withImVec4 (thBarWsActive theme) $ \colPtr ->
+      BS.useAsCString (TE.encodeUtf8 label) $ \txtPtr ->
+        Raw.textColored colPtr txtPtr
+    else text label
+  withImVec2 (ImVec2 (x0 + w) y0) $ \p -> Raw.setCursorPos p
+  return (w, clicked)
+
+-- | Width of one bar item (text + click-target padding).
+barItemWidth :: T.Text -> IO Float
+barItemWidth label = do
+  ImVec2 tw _ <- calcTextSize label True 0
+  return (tw + 2 * framePadX)
+
+-- | The vertical separator label (spaces included, so items need no
+-- extra SameLine spacing around it).
+sepLabel :: T.Text
+sepLabel = " | "
+
+-- | Render a separator between left-section items: the sepLabel in
+-- the theme's muted bar.separator color, vertically centered in a row
+-- of the given height.
+renderSep :: Theme -> Float -> IO ()
+renderSep theme rowH = do
+  ImVec2 _ th <- calcTextSize sepLabel True 0
+  centerCursorY theme rowH th
+  withImVec4 (thBarSeparator theme) $ \colPtr ->
+    BS.useAsCString (TE.encodeUtf8 sepLabel) $ \txtPtr ->
+      Raw.textColored colPtr txtPtr
+
+sepWidth :: IO Float
+sepWidth = do
+  ImVec2 w _ <- calcTextSize sepLabel True 0
+  return w
+
+-- | Move the cursor so the next widget of height h is vertically
+-- centered in a content row of height rowH.
+centerCursorY :: Theme -> Float -> Float -> IO ()
+centerCursorY theme rowH h = do
+  ImVec2 x _ <- getCursorPos
+  withImVec2 (ImVec2 x (thTrayPadY theme + max 0 (rowH - h) / 2))
+    $ \p -> Raw.setCursorPos p
 
 -- | Measure the workspace section's width WITHOUT rendering (the
 -- spacer math runs before Begin; drawing there triggers ImGui usage
 -- errors and the auto-opened Debug##Default window).
-measureWorkspaces :: TVar BarState -> Config -> Float -> IO Float
-measureWorkspaces st config gap = do
+measureWorkspaces :: TVar BarState -> Config -> IO Float
+measureWorkspaces st config = do
   s <- readTVarIO st
   if configBarWorkspaces config && not (null (barNames s))
     then do
-      ws <- mapM buttonWidth (barNames s)
-      return (sum ws + fromIntegral (length ws - 1) * gap)
+      ws <- mapM barItemWidth (barNames s)
+      sw <- sepWidth
+      return (sum ws + fromIntegral (length ws - 1) * sw)
     else return 0
 
--- | Measure the taskbar window-buttons width without rendering.
-measureWinButtons :: TVar BarState -> Config -> Float -> IO Float
-measureWinButtons st config gap = do
+-- | Measure the taskbar window-items width without rendering.
+measureWinButtons :: TVar BarState -> Config -> IO Float
+measureWinButtons st config = do
   s <- readTVarIO st
   if configBarWindows config && not (null (barWindows s))
     then do
-      ws <- mapM (buttonWidth . truncateTitle . wiTitle) (barWindows s)
-      return (sum ws + fromIntegral (length ws - 1) * gap)
+      ws <- mapM (barItemWidth . truncateTitle . wiTitle) (barWindows s)
+      sw <- sepWidth
+      return (sum ws + fromIntegral (length ws - 1) * sw)
     else return 0
-
-buttonHilite :: Theme -> Bool -> T.Text -> IO Bool
-buttonHilite theme active label =
-  if active
-    then withImVec4 (thMenuBg theme) $ \ptr -> do
-      Raw.pushStyleColor ImGuiCol_Button ptr
-      c <- smallButton label
-      popStyleColor 1
-      return c
-    else smallButton label
-
-buttonWidth :: T.Text -> IO Float
-buttonWidth label = do
-  ImVec2 tw _ <- calcTextSize label True 0
-  return (tw + 2 * framePadX)
 
 -- | ImGui's default FramePadding (pixel-probed from the rendered
 -- tray: item pitch = btn + 8 + ItemSpacing 8).
@@ -427,3 +489,6 @@ foreign import ccall "homgb_same_line" c_same_line :: CFloat -> IO ()
 
 withImVec4 :: ImVec4 -> (Ptr ImVec4 -> IO a) -> IO a
 withImVec4 v f = alloca $ \p -> poke p v >> f p
+
+withImVec2 :: ImVec2 -> (Ptr ImVec2 -> IO a) -> IO a
+withImVec2 v f = alloca $ \p -> poke p v >> f p
