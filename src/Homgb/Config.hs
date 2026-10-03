@@ -143,6 +143,9 @@ data Config = Config
   , configTrayBehindWindows :: Bool
     -- ^ True: tray stays behind all windows (unclickable where
     -- overlapped); False: normal panel stacking, above apps
+  , configTrayShowPassive :: Bool
+    -- ^ show SNI items that report Status=Passive (many apps —
+    -- Telegram, Electron clients — misuse it; Plasma shows them)
 
   -- theming (raw @theme:@ section; see Homgb.Theme)
   , configTheme :: ThemeConfig
@@ -305,6 +308,8 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "follow-mouse" False
   -- configTrayBehindWindows
     <*> secondLevel o "tray" "behind-windows" False
+  -- configTrayShowPassive
+    <*> secondLevel o "tray" "show-passive" True
   -- configTheme
     <*> firstLevel o "theme" defaultThemeConfig
   -- configBarLayout
@@ -490,6 +495,7 @@ defaultConfigText = Text.pack $ unlines
   , "  monitor: 0"
   , "  follow-mouse: false"
   , "  behind-windows: false"
+  , "  show-passive: true"
   , "bar:"
   , "  layout: true"
   , "  workspaces: true"

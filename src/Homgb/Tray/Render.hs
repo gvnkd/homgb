@@ -50,6 +50,27 @@ import Homgb.Tray.Menu.Render (openItemMenu)
 -- | Tray icon texture cache: bus name -> (version, texture).
 type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 
+-- | An item renders unless it is Passive and the user opted to hide
+-- passive items (tray.show-passive; default shows them — many apps,
+-- Telegram and Electron clients among them, misuse Passive and
+-- Plasma shows them too).
+keepItem :: Config -> TrayItem -> Bool
+keepItem config item =
+  configTrayShowPassive config || tiStatus item /= Just "Passive"
+
+-- | HOMGB_DEBUG: list registered items and which are hidden, so
+-- "where did my app go" is answerable from the log.
+dbgPassive :: Config -> TrayState -> [TrayItem] -> IO ()
+dbgPassive config state visible = do
+  dbg <- lookupEnv "HOMGB_DEBUG"
+  case dbg of
+    Just _ -> hPutStrLn stderr $ "tray items: "
+      ++ show [ (t, coerce (itemServiceName (tiInfo i)) :: String, tiStatus i)
+              | i <- trayItems state
+              , let t = iconTitle (tiInfo i) ]
+      ++ " shown=" ++ show (length visible)
+    Nothing -> return ()
+
 -- | Hover tooltip handoff: while the LAST item/widget is hovered,
 -- refresh the pending-tooltip state (the tooltip SURFACE picks it up
 -- after the hover delay; staleness via tiLastSeen).
@@ -107,9 +128,9 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
               | i <- trayItems state
               , let t = iconTitle (tiInfo i) ]
     Nothing -> return ()
-  let items = [ ti | ti <- trayItems state
-               , tiStatus ti /= Just "Passive" ]
-      iconSize = fromIntegral (thTrayIconSize theme)
+  let items = filter (keepItem config) (trayItems state)
+  dbgPassive config state items
+  let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
       pos = ImVec2 0 0
@@ -194,9 +215,9 @@ renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
 renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               winPos screenSize@(monW, _) = do
   state <- readTVarIO (trayState env)
-  let items = [ ti | ti <- trayItems state
-              , tiStatus ti /= Just "Passive" ]
-      iconSize = fromIntegral (thTrayIconSize theme)
+  let items = filter (keepItem config) (trayItems state)
+  dbgPassive config state items
+  let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
       contentH = btn + 2 * framePadY + 2 * thTrayPadY theme
