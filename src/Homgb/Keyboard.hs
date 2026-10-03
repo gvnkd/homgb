@@ -14,16 +14,25 @@
 module Homgb.Keyboard
   ( LayoutState(..)
   , KeyboardEnv(..)
+  , PerAppState(..)
   , startKeyboard
   , currentLayout
   , pollGroup
   , rotateLayout
+  , syncFocus
   ) where
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
+import Control.Exception (SomeException, try)
+import Foreign.C.Types (CLong)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
+import Graphics.X11.Types (Window)
+import Graphics.X11.Xlib.Extras (ClassHint, getClassHint, resClass, resName)
+import Graphics.X11.Xlib.Types (Display)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, hFlush, stderr)
 
@@ -40,6 +49,19 @@ data KeyboardEnv = KeyboardEnv
   { kbState :: TVar LayoutState
   , kbSwitchConn :: Xcb.ConnPtr  -- ^ used by the grab thread (rotations)
   , kbPollConn :: Xcb.ConnPtr    -- ^ used by the render loop (indicator)
+  , kbPerApp :: Maybe PerAppState
+    -- ^ Nothing when config keyboard.per-app is off
+  }
+
+-- | Per-application layout memory (config keyboard.per-app, default on;
+-- KDE-style). @paFocus@ caches the last seen focused window and its
+-- WM_CLASS so the render loop can diff cheaply; @paGroups@ maps a
+-- class name to the group the user last locked while a window of that
+-- class was focused. Apps without an entry keep whatever layout is
+-- current and get an entry on the first manual switch.
+data PerAppState = PerAppState
+  { paFocus :: TVar (CLong, T.Text)
+  , paGroups :: TVar (Map T.Text Int)
   }
 
 -- | Layout name for the current group ("us"); "" when unknown.
@@ -66,10 +88,14 @@ startKeyboard config = do
         , lsGroup = maybe 0 id mGroup
         , lsQueriedAt = now
         }
+      pa <- if configKbPerApp config
+        then Just <$> (PerAppState <$> newTVarIO (0, "") <*> newTVarIO Map.empty)
+        else return Nothing
       let kb = KeyboardEnv
             { kbState = tState
             , kbSwitchConn = switchConn
             , kbPollConn = pollConn
+            , kbPerApp = pa
             }
       return (Just kb)
     _ -> do
@@ -97,8 +123,21 @@ rotateLayout kb = do
           now <- getCurrentTime
           atomically $ modifyTVar' (kbState kb) $ \st ->
             st { lsLayouts = layouts, lsGroup = next, lsQueriedAt = now }
+          recordForFocused kb next
           debugLn $ "keyboard: group -> " ++ show next
         else hPutStrLn stderr "keyboard: xcb lock group failed"
+
+-- | Per-app bookkeeping for a manual switch: remember the new group
+-- for the focused window's class (no-op without a class or when
+-- per-app is off).
+recordForFocused :: KeyboardEnv -> Int -> IO ()
+recordForFocused kb g = mapM_ record (kbPerApp kb)
+  where
+    record pa = do
+      (_, klass) <- readTVarIO (paFocus pa)
+      if T.null klass
+        then return ()
+        else atomically $ modifyTVar' (paGroups pa) (Map.insert klass g)
 
 debugLn :: String -> IO ()
 debugLn msg = do
@@ -123,3 +162,54 @@ pollGroup kb = do
         st { lsGroup = newGroup, lsQueriedAt = now }
       return (newGroup /= lsGroup s)
     else return False
+
+-- | Follow the focused window (per-app layout): called from
+-- frameUpkeep with the bar's current @barActiveWindow@ read whenever it
+-- may have changed. When the focused xid differs from the cached one,
+-- reads the new window's WM_CLASS and — if a layout was remembered for
+-- that class — locks it (via the render thread's own xcb connection).
+-- Returns True when the group actually changed (indicator redraw).
+-- Windows without a WM_CLASS (and the no-focus state, xid 0) are
+-- ignored: the current layout stays and nothing is remembered.
+syncFocus :: KeyboardEnv -> Display -> CLong -> IO Bool
+syncFocus kb dpy xid = case kbPerApp kb of
+  Nothing -> return False
+  Just pa -> do
+    (oldXid, _) <- readTVarIO (paFocus pa)
+    if oldXid == xid
+      then return False
+      else do
+        klass <- if xid > 0 then windowClass dpy (fromIntegral xid) else return ""
+        atomically $ writeTVar (paFocus pa) (xid, klass)
+        remembered <-
+          if T.null klass
+            then return Nothing
+            else Map.lookup klass <$> readTVarIO (paGroups pa)
+        case remembered of
+          Nothing -> return False
+          Just g -> do
+            s <- readTVarIO (kbState kb)
+            if g == lsGroup s
+              then return False
+              else do
+                ok <- Xcb.lockGroup (kbPollConn kb) g
+                if ok
+                  then do
+                    now <- getCurrentTime
+                    atomically $ modifyTVar' (kbState kb) $ \st ->
+                      st { lsGroup = g, lsQueriedAt = now }
+                    debugLn $ "keyboard: per-app " ++ T.unpack klass
+                      ++ " -> group " ++ show g
+                    return True
+                  else return False
+
+-- | WM_CLASS of a window (class part, falling back to the instance
+-- name); "" when unreadable (window died mid-read, no class set).
+windowClass :: Display -> Window -> IO T.Text
+windowClass dpy win = do
+  res <- try (getClassHint dpy win) :: IO (Either SomeException ClassHint)
+  return $ case res of
+    Left _ -> ""
+    Right ch ->
+      let c = T.pack (resClass ch)
+      in if T.null c then T.pack (resName ch) else c

@@ -579,6 +579,22 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   `DearImGui.Raw.Font.pushFontWithSize` (imgui 1.92 PushFont with size
   override — dear-imgui re-exports it; two-pass measure-then-scale in
   renderIndicator fits text height to the icon row).
+- Per-app layouts (2026-10-03, `keyboard.per-app`, DEFAULT ON,
+  KDE-style): KeyboardEnv gained `kbPerApp :: Maybe PerAppState`
+  (paFocus = cached (xid, WM_CLASS), paGroups = Map class->group).
+  Recording happens in rotateLayout (manual switch → remember group
+  for the focused class); restore happens in syncFocus, called from
+  frameUpkeep right after refreshBar whenever `barActiveWindow` read
+  changed — root _NET_ACTIVE_WINDOW changes fire the bar event thread
+  (dirty+wake), so no new deadline was needed. Focus tracking reuses
+  the bar's read; keying is resClass with resName fallback via
+  Graphics.X11.Xlib.Extras.getClassHint on trayDisplay (X11 1.10.3
+  binds it). syncFocus locks via kbPollConn (render thread's own xcb
+  conn) — kbSwitchConn stays Control-thread-only. Group changes from
+  syncFocus OR into upKbChanged so the indicator redraws. Windows
+  without WM_CLASS and xid 0 are ignored (layout stays, nothing
+  remembered). Layouts switched OUTSIDE homgb (raw xkb tools) are not
+  attributed to any app — same limitation as KDE.
 - Rotation no-op trap: the layout list comes from root
   `_XKB_RULES_NAMES` (live). If the X session has ONE layout
   (`setxkbmap -query` shows just "us"), NextLayout locks group 0 and

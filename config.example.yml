@@ -288,3 +288,10 @@ keyboard:
 
   # Show the current-layout button in the bar (click rotates).
   indicator: true
+
+  # Per-application layouts (default on): homgb remembers the layout
+  # you last switched to in each app (keyed by WM_CLASS) and restores
+  # it when one of the app's windows regains focus. Apps you never
+  # switched in keep the current layout; the first manual switch in an
+  # app creates its entry.
+  per-app: true

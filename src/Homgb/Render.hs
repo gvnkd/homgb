@@ -41,7 +41,7 @@ import qualified DearImGui.Raw as Raw
   , setNextWindowSize, showMetricsWindow, separator
   , pushStyleVar)
 
-import Homgb.Bar (refreshBar)
+import Homgb.Bar (refreshBar, barActiveWindow)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
@@ -56,7 +56,7 @@ import Homgb.Surface
   , rootChildren, surfaceX11Id)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
 import Homgb.Tray (TrayEnv(..), TooltipInfo(..), reapZombieItems)
-import Homgb.Keyboard (pollGroup)
+import Homgb.Keyboard (pollGroup, syncFocus)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 import Homgb.WMProps (setStrutPartial)
@@ -123,7 +123,7 @@ frameUpkeep app = do
   nowTick <- getPOSIXTime
   dirty <- readTVarIO (appBarDirty app)
   lastBar <- readTVarIO (appBarTick app)
-  barChanged <-
+  (barChanged, kbFocusChanged) <-
     if dirty || nowTick - lastBar > 5
       then do
         atomically $ do
@@ -139,6 +139,11 @@ frameUpkeep app = do
           oldBar <- readTVarIO (appBar app)
           refreshBar dpy mStrut (appBar app)
           newBar <- readTVarIO (appBar app)
+          -- per-app layouts: the active-window read just refreshed;
+          -- restore the layout remembered for the focused class
+          kbFocus <- case appKeyboard app of
+            Just kb -> syncFocus kb dpy (barActiveWindow newBar)
+            Nothing -> return False
           -- reap SNI items whose unique bus name died without
           -- unregistering (zombies spam the property poller and leave
           -- stuck empty menus); close their menus too
@@ -146,12 +151,12 @@ frameUpkeep app = do
                         (trayState (appTray app))
           unless (null removed) $ atomically $ modifyTVar' (trayMenus (appTray app))
             (Map.filterWithKey (\k _ -> k `notElem` removed))
-          return (oldBar /= newBar)
-        return (maybe False id mChanged)
-      else return False
+          return ((oldBar /= newBar), kbFocus)
+        return (maybe (False, False) id mChanged)
+      else return (False, False)
   return Upkeep
     { upExpired = not (null due)
-    , upKbChanged = kbChanged
+    , upKbChanged = kbChanged || kbFocusChanged
     , upBarChanged = barChanged
     , upPointerMoved = pointerMoved
     }

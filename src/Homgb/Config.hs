@@ -176,6 +176,9 @@ data Config = Config
   -- keyboard
   , configKbLayouts :: [String]
   , configKbIndicator :: Bool
+  , configKbPerApp :: Bool
+    -- ^ remember the layout per application (WM_CLASS) and restore it
+    --   when one of the app's windows regains focus
   }
 
 (.:.) :: FromJSON a => Y.Parser (Maybe Y.Object) -> Text.Text -> Y.Parser (Maybe a)
@@ -338,6 +341,8 @@ instance FromJSON Config where
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
     <*> secondLevel o "keyboard" "indicator" True
+  -- configKbPerApp
+    <*> secondLevel o "keyboard" "per-app" True
   parseJSON _ = fail "Expected Object for Config value"
 
 data ButtonConfig = Button
@@ -553,4 +558,5 @@ defaultConfigText = Text.pack $ unlines
   , "keyboard:"
   , "  layouts: []"
   , "  indicator: true"
+  , "  per-app: true"
   ]
