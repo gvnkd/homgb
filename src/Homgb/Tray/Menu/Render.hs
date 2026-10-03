@@ -38,14 +38,43 @@ import DBus.Internal.Types (BusName(..), ObjectPath)
 
 import DearImGui hiding (begin, x, y, w, size)
 import qualified DearImGui.Raw as Raw (begin, separator, getMousePos
+  , setNextWindowSize
                                        , setNextWindowPos, pushStyleColor
                                        , pushStyleVar, popStyleVar)
 
 import StatusNotifier.Host.Service (ItemInfo(..))
 
+import Homgb.Bar (framePadY)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray.Menu.Client
 import Homgb.Tray.Menu.Tree
+
+-- | Fully analytic menu content size (menuW, menuH). Auto-fit
+-- windows are clamped to the viewport, so the surface can never
+-- learn the content size from the window (feedback deadlock) — and
+-- fixed-size surfaces clip long/wide menus. Labels measure pre-Begin
+-- via calcTextSize; heights derive from the font line height.
+measureMenu :: Theme -> Maybe LayoutNode -> IO (Float, Float)
+measureMenu theme mTree = do
+  ImVec2 _ lineH <- calcTextSize "A" True 0
+  let nodes = maybe [] lnChildren mTree
+      -- submenu headers render their children indented one level
+      flat = concatMap
+        (\n -> (0 :: Int, n)
+          : [ (1, c) | menuItemChildrenDisplay n == Just "submenu"
+                     , c <- lnChildren n ])
+        nodes
+  ws <- mapM (\(depth, n) -> do
+    let est = fromIntegral (T.length (toggleLabel n)) * lineH * 0.55
+    return (est + fromIntegral depth * 14)) flat
+  let heights =
+        [ if menuItemIsSeparator nd then lineH * 0.6
+          else lineH + 2 * framePadY + 4
+        | (_, nd) <- flat ]
+      menuW = maximum (0 : ws) + 2 * thMenuPadX theme + 12
+      menuH = sum heights + fromIntegral (max 0 (length flat - 1)) * 4
+        + 2 * thMenuPadY theme + lineH * 0.5
+  return (menuW, menuH)
 
 -- | Per-item menu state. The tree is refetched on open and whenever the
 -- item emits LayoutUpdated. Rendered as a plain anchored window (ImGui
@@ -149,11 +178,19 @@ renderMenus client menus prevButtons mDisplay theme winPos = do
               , ImGuiWindowFlags_NoResize
               , ImGuiWindowFlags_NoMove
               , ImGuiWindowFlags_NoCollapse
-              , ImGuiWindowFlags_AlwaysAutoResize
+              , ImGuiWindowFlags_NoScrollbar
               , ImGuiWindowFlags_NoFocusOnAppearing
               ]
+        -- fully analytic menu size: auto-fit windows are clamped to
+        -- the viewport, so a surface that hugs the window deadlocks
+        -- (window can't outgrow the surface, surface waits for the
+        -- window). Labels measure fine pre-Begin; heights use the
+        -- font's line height (frame height + item spacing).
+        (menuW, menuH) <- measureMenu theme (msTree st)
         withImVec2 (ImVec2 0 0) $ \posPtr ->
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+        withImVec2 (ImVec2 menuW menuH) $ \sizePtr ->
+          Raw.setNextWindowSize sizePtr ImGuiCond_Always
         -- themed menu background (alpha < 1 keeps the desktop faintly
         -- visible under compositing)
         mRect <- withImVec4 (thMenuBg theme) $ \bgPtr ->
@@ -166,12 +203,14 @@ renderMenus client menus prevButtons mDisplay theme winPos = do
                 $ \label -> Raw.begin label Nothing (Just menuFlags)
               r <- if beginVisible
                 then do
-                  rect <- windowRect
-                  -- The root node (id 0) is virtual and may itself claim
-                  -- "children-display: submenu" (steam does) - flatten.
                   forM_ (msTree st) $ \tree ->
                     forM_ (lnChildren tree) $
                       renderNode client menus key path info
+                  -- measure AFTER drawing: auto-resize windows only
+                  -- update their size at frame end, so a pre-content
+                  -- read is stale (an empty bbox) — this value also
+                  -- drives the surface hug in drawMenusSurface
+                  rect <- windowRect
                   -- Ignore the press that opened this menu (same frame /
                   -- fresh press right after opening).
                   let openedAgo = now - msOpenedAt st

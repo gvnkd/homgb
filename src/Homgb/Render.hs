@@ -54,7 +54,7 @@ import Homgb.Surface
   , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking
   , surfaceX11Id)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
-import Homgb.Tray (TrayEnv(..), trayTextures, TooltipInfo(..))
+import Homgb.Tray (TrayEnv(..), trayTextures, TooltipInfo(..), reapZombieItems)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 import Homgb.WMProps (setStrutPartial)
@@ -107,6 +107,13 @@ frameUpkeep app = do
       forM_ (trayDisplay (appTray app)) $ \dpy -> do
         mStrut <- readTVarIO (appStrut app)
         refreshBar dpy mStrut (appBar app)
+      -- reap SNI items whose unique bus name died without
+      -- unregistering (zombies spam the property poller and leave
+      -- stuck empty menus); close their menus too
+      removed <- reapZombieItems (trayClient (appTray app))
+                    (trayState (appTray app))
+      unless (null removed) $ atomically $ modifyTVar' (trayMenus (appTray app))
+        (Map.filterWithKey (\k _ -> k `notElem` removed))
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.
@@ -287,11 +294,15 @@ drawMenusSurface app = do
           y = if floor py + ceiling mh > by + bh - 4
                 then max by (by + bh - 4 - ceiling mh)
                 else floor py
-      -- move BEFORE show: the WM places a freshly mapped window
-      -- itself (xmonad centers it), and mapping at the target avoids
-      -- a visible jump from the center
+      -- hug the menu content: the menu surface was created at a
+      -- fixed 360x560, but AlwaysAutoResize windows overflow it for
+      -- long labels (visually clipped at the viewport edge — menu
+      -- items looked "shrunk"). Resize AFTER show: xmonad restores a
+      -- re-mapped float's geometry from its float map, discarding
+      -- resizes that happened while withdrawn (popup pattern).
       moveSurfaceWindow surf x y
       forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+      resizeSurfaceWindow surf (ceiling mw + 4) (ceiling mh + 4)
 
 -- | SNI tooltip surface (EWMH TOOLTIP): shows the pending hover
 -- tooltip written by the tray render after the hover delay. Renders

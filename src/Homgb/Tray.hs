@@ -7,13 +7,15 @@ module Homgb.Tray
   , TrayEnv(..)
   , TooltipInfo(..)
   , startTray
+  , reapZombieItems
   ) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
-import Control.Monad (forM_, void, when)
+import Control.Monad (filterM, forM_, unless, void, when)
+import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Data.Text as T
@@ -22,7 +24,9 @@ import Graphics.X11.Xlib (Display)
 import Graphics.X11.Xlib.Display (openDisplay)
 import System.IO (hPutStrLn, stderr)
 
-import DBus.Client (Client, connectSession)
+import DBus
+import DBus.Client (Client, call, connectSession)
+import DBus.Internal.Types (BusName(..))
 import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
 import qualified StatusNotifier.Watcher.Client as Watcher
@@ -97,6 +101,38 @@ startTray = do
 
 ignoreIO :: IOException -> IO (Maybe Display)
 ignoreIO _ = return Nothing
+
+-- | Drop tray items whose SNI service lived on a UNIQUE bus name
+-- that no longer has an owner (the client died/crashed without
+-- unregistering). Real items use unique names, so a dead name is a
+-- dead item; well-known names are never reaped. Returns the removed
+-- names so the caller can also close their menus.
+reapZombieItems :: Client -> TVar TrayState -> IO [String]
+reapZombieItems client tState = do
+  s <- readTVarIO tState
+  let zombies = [ n | i <- trayItems s
+                , let n = itemServiceName (tiInfo i)
+                , isUnique n ]
+  dead <- filterM (fmap not . nameAlive) zombies
+  unless (null dead) $ do
+    atomically $ modifyTVar' tState $ \st ->
+      st { trayItems = [ i | i <- trayItems st
+                           , itemServiceName (tiInfo i) `notElem` dead ] }
+    hPutStrLn stderr $ "tray: reaped " ++ show (length dead)
+      ++ " zombie item(s)"
+  return (map busNameString dead)
+  where
+    isUnique (BusName n) = ":" `isPrefixOf` n
+    busNameString (BusName n) = n
+    nameAlive name = do
+      r <- call client (methodCall "/org/freedesktop/DBus" (interfaceName_ "org.freedesktop.DBus") "NameHasOwner")        { methodCallDestination = Just "org.freedesktop.DBus"
+        , methodCallBody = [toVariant name]
+        }
+      case r of
+        Right rep -> case methodReturnBody rep of
+          (b:_) -> return (fromVariant b == Just True)
+          _ -> return False
+        Left _ -> return False
 
 runHost :: TVar TrayState -> Client -> IO ()
 runHost tState client = go (10 :: Int)

@@ -60,7 +60,7 @@ acquireTraySelection dpy trayWin = do
       hPutStrLn stderr
         "tray: XEmbed selection owned by another tray (trayer?); XEmbed icons disabled"
       return Nothing
-    Just (o, ts) -> do
+    Just (_, ts) -> do
       atom <- c_opcode_atom dpy
       hPutStrLn stderr "tray: XEmbed host active"
       return (Just (EmbedState dpy trayWin ts atom))
