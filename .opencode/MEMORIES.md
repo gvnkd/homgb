@@ -237,6 +237,20 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   the first widget must draw at the cursor (no SameLine); `follow`
   args must only reflect items on the ANCHORED line. Verified with a
   private-bus homgb instance (zero tray items).
+- MENU POLL LOOP (2026-10-03): while a menu is open the loop must
+  re-render ~10-20Hz (outside-click close polls XQueryPointer edges in
+  renderMenus; only runs inside a render). THREE designs: (1)
+  per-frame wake from renderMenus = frame-locked at GL speed
+  (~13-15% CPU); (2) rate-limited wake = DEAD LOOP (a timeout wake has
+  sawEvents=False → changed=False → no render → poll stops → close
+  and hover break); (3) WORKING: menuD deadline (now+0.1) +
+  mainLoop ORs menuOpen into the render gate + menu surface drawn on
+  `changed || menuOpen` but ONLY the menu surface on menu ticks (full
+  re-render per tick ≈10%). Each tick costs ~7-9ms (GL swap) so 20Hz
+  ≈14%, 10Hz ≈2-3%. GOTCHA: the menu HIDE must run OUTSIDE the
+  (changed || menuOpen) gate — on the close-transition iteration both
+  are false (closeMenu doesn't wake) and a gated hide leaves the
+  surface mapped forever (design 1's trailing wake had masked this).
 - STALE-TOOLTIP DEADLINE SPIN (2026-10-03, cost a long debugging round):
   offerTooltip writes trayTooltip ONLY while hovered; nothing clears
   it, so after the pointer leaves the TVar holds TooltipInfo with

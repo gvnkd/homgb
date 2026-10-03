@@ -145,6 +145,7 @@ openItemMenu client menus info trayWinPos trayH screenSize wake =
           rx = min (max 0 (floor mx + wx)) (sw - 60)
           ry = wy + trayH + 2
           pos = ImVec2 (fromIntegral rx) (fromIntegral ry)
+      dbg <- lookupEnv "HOMGB_DEBUG"
       nowVisible <- atomically $ do
         m <- readTVar menus
         case Map.lookup key m of
@@ -172,6 +173,10 @@ openItemMenu client menus info trayWinPos trayH screenSize wake =
                 })
               (hideOthers key m))
             return True
+      case dbg of
+        Just _ -> hPutStrLn stderr $ "menu toggle " ++ take 30 key
+          ++ " -> " ++ if nowVisible then "OPEN" else "CLOSED"
+        Nothing -> return ()
       when nowVisible $ void $ forkIO $ do
         fetchLayout wake client menus key
         watch wake client menus key
@@ -193,7 +198,7 @@ data MenuFrame = MenuFrame
 -- own mouse position goes stale once the pointer leaves our surfaces.
 renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> Theme
             -> (Int, Int) -> IO () -> IO (Maybe MenuFrame)
-renderMenus client menus prevButtons mDisplay theme winPos wake = do
+renderMenus client menus prevButtons mDisplay theme winPos _wake = do
   (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
@@ -278,9 +283,12 @@ renderMenus client menus prevButtons mDisplay theme winPos wake = do
               Nothing -> (0, 0)
         return (MenuFrame key (px, py) size <$ mRect)
       else return Nothing
-  -- keep iterating (~20Hz) while any menu is open: the outside-click
-  -- close polls XQueryPointer edges, which only run when we render
-  when (any (\(_, _, st) -> msVisible st) (Map.elems m)) wake
+  -- The ~20Hz poll-while-open loop is driven by the MAIN LOOP's menu
+  -- deadline (Homgb.nextDeadline adds 50ms while anyMenuOpen) plus
+  -- the menuOpen render gate in mainLoop — NOT by per-frame wakes: an
+  -- unthrottled wake makes SDL's wait return immediately and the loop
+  -- renders frame-locked at GL speed (~13-15% CPU), and a wake-gated
+  -- throttle dies as soon as a timeout-wake finds no SDL event.
   return (listToMaybe (catMaybes frames))
   where
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
@@ -329,8 +337,13 @@ renderRow client menus key path info node
         closeMenu menus key
 
 closeMenu :: Menus -> String -> IO ()
-closeMenu menus key = atomically $ modifyTVar' menus $
-  Map.adjust (\(i, p, st) -> (i, p, st { msVisible = False })) key
+closeMenu menus key = do
+  dbg <- lookupEnv "HOMGB_DEBUG"
+  case dbg of
+    Just _ -> hPutStrLn stderr $ "menu close " ++ take 30 key
+    Nothing -> return ()
+  atomically $ modifyTVar' menus $
+    Map.adjust (\(i, p, st) -> (i, p, st { msVisible = False })) key
 
 -- Only one tray menu may be open at a time: opening one hides the rest.
 hideOthers :: String -> MenusMap -> MenusMap

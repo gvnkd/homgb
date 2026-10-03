@@ -33,6 +33,7 @@ import Homgb.Monitors (fallbackMonitor, getMonitors)
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Notifications.Data (Notification(..))
 import Homgb.Render
+import Homgb.Tray.Menu.Render (MenuState(..))
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
@@ -171,45 +172,63 @@ mainLoop app = do
         changed = sawEvents
           || upExpired up || upKbChanged up || upBarChanged up
           || upPointerMoved up || popUnmeasured
-    when changed $ do
-      -- bar auto-hide: when a window covers the bar's strip
-      -- (ToggleStruts, fullscreen layouts, floated windows), hide
-      -- the surface entirely
-      bar <- readTVarIO (appBar app)
-      let covered = configBarLayout config && barCovered bar
-      if covered
-        then forM_ (trayDisplay (appTray app)) $ \dpy ->
-               hideSurface dpy (surfacesTray (appSurfaces app))
-        else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
-      -- SNI hover tooltips: own TOOLTIP surface (in-window tooltips
-      -- clip against the bar viewport)
-      ttOpen <- anyTooltipOpen app
-      if ttOpen
-        then drawOn (surfacesTooltip (appSurfaces app)) (drawTooltipSurface app)
-        else forM_ (trayDisplay (appTray app)) $ \dpy ->
-               hideSurface dpy (surfacesTooltip (appSurfaces app))
-      -- swapWindow on a hidden SDL window maps it, so the popup
-      -- surface must be skipped entirely (not just drawn-and-hidden)
-      -- while no popups are live
-      if popCount == 0
-        then forM_ (trayDisplay (appTray app)) $ \dpy ->
-               hideSurface dpy (surfacesPopups (appSurfaces app))
-        else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+    -- an open menu runs its own ~20Hz poll loop (outside-click close
+    -- detection via XQueryPointer edges in renderMenus): it must
+    -- render on the menu DEADLINE (nextDeadline adds 50ms), not only
+    -- on state changes — and crucially NOT via renderMenus' old
+    -- per-frame wake, which made the loop frame-locked at GL speed
+    -- (~13-15% CPU while open)
+    menuOpen <- anyMenuOpen app
+    when (changed || menuOpen) $ do
+      -- The menu poll ticks (~20Hz, menuOpen via the menu deadline)
+      -- redraw ONLY the menu surface: a full re-render per tick costs
+      -- ~10% CPU. Everything else renders on real changes only.
+      when changed $ do
+        -- bar auto-hide: when a window covers the bar's strip
+        -- (ToggleStruts, fullscreen layouts, floated windows), hide
+        -- the surface entirely
+        bar <- readTVarIO (appBar app)
+        let covered = configBarLayout config && barCovered bar
+        if covered
+          then forM_ (trayDisplay (appTray app)) $ \dpy ->
+                 hideSurface dpy (surfacesTray (appSurfaces app))
+          else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
+        -- SNI hover tooltips: own TOOLTIP surface (in-window tooltips
+        -- clip against the bar viewport)
+        ttOpen <- anyTooltipOpen app
+        if ttOpen
+          then drawOn (surfacesTooltip (appSurfaces app)) (drawTooltipSurface app)
+          else forM_ (trayDisplay (appTray app)) $ \dpy ->
+                 hideSurface dpy (surfacesTooltip (appSurfaces app))
+        -- swapWindow on a hidden SDL window maps it, so the popup
+        -- surface must be skipped entirely (not just drawn-and-hidden)
+        -- while no popups are live
+        if popCount == 0
+          then forM_ (trayDisplay (appTray app)) $ \dpy ->
+                 hideSurface dpy (surfacesPopups (appSurfaces app))
+          else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+        centerOpen <- readTVarIO (appCenterVisible app)
+        if centerOpen
+          then drawOn (surfacesCenter (appSurfaces app)) (drawCenterSurface app)
+          else forM_ (trayDisplay (appTray app)) $ \dpy ->
+                 hideSurface dpy (surfacesCenter (appSurfaces app))
+        when popUnmeasured $
+          drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
       -- the menu surface is drawn only while a menu is open: swapping
       -- a hidden SDL window maps it (stale black frame over other
-      -- surfaces)
-      menuOpen <- anyMenuOpen app
+      -- surfaces). menuOpen also drives the menu poll ticks above.
       if menuOpen
         then drawOn (surfacesMenus (appSurfaces app)) (drawMenusSurface app)
         else forM_ (trayDisplay (appTray app)) $ \dpy ->
                hideSurface dpy (surfacesMenus (appSurfaces app))
-      centerOpen <- readTVarIO (appCenterVisible app)
-      if centerOpen
-        then drawOn (surfacesCenter (appSurfaces app)) (drawCenterSurface app)
-        else forM_ (trayDisplay (appTray app)) $ \dpy ->
-               hideSurface dpy (surfacesCenter (appSurfaces app))
-      when popUnmeasured $
-        drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+    -- Menu hiding runs OUTSIDE the render gate: on the close
+    -- transition neither `changed` nor menuOpen is true (closeMenu
+    -- sets msVisible=False without waking), so a gated hide would
+    -- leave the surface mapped forever. hideSurface is idempotent
+    -- (sShown), so calling it on idle iterations is free.
+    unless menuOpen $
+      forM_ (trayDisplay (appTray app)) $ \dpy ->
+        hideSurface dpy (surfacesMenus (appSurfaces app))
     mainLoop app
 
 -- | Earliest time the loop must wake even with no events: the bar
@@ -246,6 +265,16 @@ nextDeadline app = do
   embedD <- do
     mHost <- readTVarIO (trayXEmbedHost (appTray app))
     return (if isJust mHost then now + 0.2 else far)
+  -- while a menu is open the loop must re-render at ~10Hz: the
+  -- outside-click close in renderMenus polls XQueryPointer edges and
+  -- only runs inside a render. Timeout wakes arrive with
+  -- sawEvents=False, so mainLoop ORs menuOpen into the render gate.
+  -- Each tick costs ~7-9ms (GL swap on this stack), so 20Hz would be
+  -- ~14% CPU; 10Hz halves that with imperceptible close latency.
+  menuD <- do
+    menus <- readTVarIO (trayMenus (appTray app))
+    return (if any (\(_, _, st) -> msVisible st) (Map.elems menus)
+              then now + 0.1 else far)
   let config = notiConfig state
       followAny = configNotiFollowMouse config
         || configNotiCenterFollowMouse config
@@ -253,7 +282,8 @@ nextDeadline app = do
       cap = now + (if followAny then 0.1 else 0.25)
       clock = fromInteger ((floor (now / 60) + 1) * 60) :: POSIXTime
       expiries = [ expiryAt config n | n <- notiStList state ]
-  return (foldl' min cap (clock : lastBar + 5 : kbD : tipD : embedD : expiries))
+  return (foldl' min cap (clock : lastBar + 5 : kbD : tipD : embedD
+    : menuD : expiries))
   where
     far = 1e12 :: POSIXTime
 
