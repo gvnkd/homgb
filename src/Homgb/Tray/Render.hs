@@ -251,8 +251,8 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
 -- | Full-width bar layout (the xmobar replacement), left to right:
 -- workspaces, active window title (capped at bar.window-title-max
 -- px), taskbar window buttons (bar.windows), an h-spacer, then the
--- right group: tray icons, keyboard indicator, clock "HH:MM", date
--- "dd.mm". Returns (monitor width, height) — the caller sizes the
+-- right group: tray icons, keyboard indicator, date "dd.mm", clock
+-- "HH:MM" (rightmost). Returns (monitor width, height) — the caller sizes the
 -- surface to the full monitor width.
 renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
               -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
@@ -296,7 +296,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       ++ show (map snd (slLeft sects)) ++ " right="
       ++ show (map snd (slRight sects)) ++ " spacer=" ++ show spacerW
     Nothing -> return ()
-  _ <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
+  _ <- withImVec4 (thBarBg theme) $ \bgPtr ->
     withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
       Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
       Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
@@ -312,8 +312,13 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       end
       Raw.popStyleVar 1
       popStyleColor 1
-  -- move XEmbed icon slots to their right-group positions
-  let rightX0 = fromIntegral monW - thTrayPadX theme - sectionSum (slRight sects)
+  -- move XEmbed icon slots to their right-group positions. The
+  -- sections render with `gap` between them, so the group's left edge
+  -- is monW - pad - (widths + gaps); forgetting the gaps shifted the
+  -- embeds right, leaving a hole after the SNI icons and colliding
+  -- the last one with the keyboard indicator.
+  let rightX0 = fromIntegral monW - thTrayPadX theme
+        - sectionSum (slRight sects) - slRightGaps sects
       itemW = btn + 2 * framePadX
       slotPos :: Int -> (Int, Int, Int)
       slotPos i =
@@ -375,9 +380,9 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
           left = filter fst [ (wsW > 0, wsW), (hasTitle, titleW)
                             , (winW > 0, winW) ]
           right = filter fst [ (iconsW > 0, iconsW), (kbW > 0, kbW)
-                             , (clockW > 0, clockW), (dateW > 0, dateW) ]
+                             , (dateW > 0, dateW), (clockW > 0, clockW) ]
           gaps = gap * (leftGaps + rightGaps + spacerGaps)
-      return (SectionLayout left right gaps titleW)
+      return (SectionLayout left right gaps titleW (gap * rightGaps))
     sectionSum ps = sum (map snd ps)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
@@ -394,11 +399,14 @@ data SectionLayout = SectionLayout
   , slRight :: [(Bool, Float)]
   , slGaps :: Float
   , slTitleW :: Float
+  , slRightGaps :: Float
+    -- ^ total spacing between the right-group sections (for embed
+    --   slot positioning)
   }
 
 -- | Render one bar row: left sections, h-spacer, right group. The
 -- section list mirrors 'measureSections' (ws, title, windows | icons,
--- indicator, clock, date).
+-- indicator, date, clock).
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
           -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
           -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
@@ -460,8 +468,8 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   _ <- renderIndicator env kbEnv (configKbIndicator config) traySpacing
          mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
          winPos
-  _ <- renderClockWidget traySpacing
-  void $ renderDateWidget traySpacing
+  _ <- renderDateWidget theme traySpacing
+  void $ renderClockWidget theme traySpacing
   where
     withDpy f = case trayDisplay env of
       Just dpy -> f dpy

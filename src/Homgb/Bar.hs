@@ -246,25 +246,33 @@ barActiveTitle :: BarState -> Maybe T.Text
 barActiveTitle s =
   wiTitle <$> find (\w -> wiXid w == barActiveWindow s) (barWindows s)
 
--- | Render the clock widget ("HH:MM") at the current cursor position.
--- Returns the content width.
-renderClockWidget :: Float -> IO Float
-renderClockWidget gap = do
+-- | Render the clock widget ("HH:MM") at the current cursor position,
+-- in the theme's bar.clock color (the rightmost bar item). Returns the
+-- content width.
+renderClockWidget :: Theme -> Float -> IO Float
+renderClockWidget theme gap = do
   sameLineS gap
   now <- zonedTimeToLocalTime <$> getZonedTime
   let label = T.pack (formatTime defaultTimeLocale "%H:%M" now)
-  text label
+  withImVec4 (thBarClock theme) $ \colPtr -> do
+    Raw.pushStyleColor ImGuiCol_Text colPtr
+    text label
+    popStyleColor 1
   ImVec2 tw _ <- calcTextSize label True 0
   return tw
 
--- | Render the date widget ("dd.mm") at the current cursor position.
--- Returns the content width.
-renderDateWidget :: Float -> IO Float
-renderDateWidget gap = do
+-- | Render the date widget ("dd.mm") at the current cursor position,
+-- in the theme's muted bar.date color so it reads apart from the
+-- clock. Returns the content width.
+renderDateWidget :: Theme -> Float -> IO Float
+renderDateWidget theme gap = do
   sameLineS gap
   now <- zonedTimeToLocalTime <$> getZonedTime
   let label = T.pack (formatTime defaultTimeLocale "%d.%m" now)
-  text label
+  withImVec4 (thBarDate theme) $ \colPtr -> do
+    Raw.pushStyleColor ImGuiCol_Text colPtr
+    text label
+    popStyleColor 1
   ImVec2 tw _ <- calcTextSize label True 0
   return tw
 

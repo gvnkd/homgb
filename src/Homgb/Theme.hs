@@ -71,6 +71,11 @@ data Theme = Theme
   -- tray menu
   , thMenuBg :: ImVec4
   , thMenuBorder :: ImVec4
+  -- status bar (bar layout mode): window background (alpha-aware) and
+  -- the right-edge clock/date text colors
+  , thBarBg :: ImVec4
+  , thBarClock :: ImVec4
+  , thBarDate :: ImVec4
   -- sizes (icon size / spacing fall back to the legacy config keys)
   , thTrayIconSize :: Int
   , thTraySpacing :: Int
@@ -123,6 +128,9 @@ mkTheme config = do
     , thPopupTitleHigh = color "popup.title-critical" (ImVec4 0.95 0.40 0.40 1.0)
     , thMenuBg = color "menu.bg" (ImVec4 0.20 0.24 0.32 0.97)
     , thMenuBorder = color "menu.border" (ImVec4 0.55 0.62 0.78 0.90)
+    , thBarBg = color "bar.bg" (ImVec4 0.09 0.10 0.11 0.85)
+    , thBarClock = color "bar.clock" (ImVec4 0.95 0.95 0.95 1.0)
+    , thBarDate = color "bar.date" (ImVec4 0.55 0.58 0.62 1.0)
     , thTrayIconSize = fromMaybe (configTrayIconSize config) (tcTrayIconSize tc)
     , thTraySpacing = fromMaybe (configTraySpacing config) (tcTraySpacing tc)
     , thTrayPadX = fromMaybe 8 (tcTrayPadX tc)
