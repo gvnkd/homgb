@@ -141,6 +141,21 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   sends the _NET_CURRENT_DESKTOP client message (C shim
   homgb_set_current_desktop) — XMonad.Hooks.EwmhDesktops honors it;
   NO xmonad.hs changes needed for the workspace part.
+- Caps-as-Hyper is the PRIMARY switch on this node (2026-10-03):
+  `setxkbmap -option grp:alt_shift_toggle,caps:hyper` + xmonad
+  `("<Hyper_L>", spawn busctl ... NextLayout)` (plain-press EZConfig
+  binding — no modifier prefix). Sergey's call: grp:caps_toggle can
+  STOP WORKING SILENTLY (any setxkbmap re-run without the options
+  drops it; then Caps capitalizes again). The hyper route cannot die
+  silently — the press visibly rotates homgb's indicator. xmonad
+  needs `xmonad --recompile && xmonad --restart` to pick up the
+  binding; recompile works with plain ghc on this node. Verified:
+  full per-app flow driven by Hyper_L presses on :0. Test-tool notes:
+  after remapping, the Caps_Lock KEYSYM has no keycode — XTEST probes
+  must look up Hyper_L (/tmp/opencode/hyperpress.c); and per-app
+  memory pollution across test runs makes focus-switch sequences look
+  "laggy" (each change is a legit restore) — restart homgb for a
+  clean test run.
 - XKB STATE-NOTIFY listener (2026-10-03, Keyboard eventLoop):
   event-driven group tracking on a THIRD xcb connection (kbEventConn),
   thread blocks in xcb_wait_for_event (GHC 'safe' FFI — unsafe pins

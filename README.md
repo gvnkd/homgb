@@ -191,6 +191,38 @@ Notes:
   that registers; `HOMGB_DEBUG=1` logs the full registered list per
   frame (`tray items: [...]`) when diagnosing.
 
+### Caps Lock as the layout-switch key
+
+Plain xmonad cannot do this: XKB applies the Caps lock state at the
+server even when a passive `XGrabKey` binding grabs the key. The key
+must be remapped at the XKB level. Two working strategies:
+
+**Caps as Hyper, switch routed through homgb (recommended).**
+`caps:hyper` maps Caps to `Hyper_L` (never capitalizes); a plain-press
+xmonad binding calls `NextLayout`, so every switch goes through homgb
+— the indicator updates instantly (XKB state-notify listener) and
+per-app layout memory records it. A dead Caps is immediately visible
+in the bar.
+
+```haskell
+-- startupHook:
+spawnOnce "setxkbmap -model pc105 -layout us,ru -option grp:alt_shift_toggle,caps:hyper"
+-- key bindings:
+, ("<Hyper_L>", spawn "busctl --user call org.homgb /org/homgb/Control org.homgb.Control NextLayout")
+```
+
+`grp:alt_shift_toggle` stays as an XKB-level fallback. Bonus: Caps
+doubles as a Hyper modifier for other combos (mind that a plain press
+fires `NextLayout`).
+
+**XKB-native toggle (`grp:caps_toggle`).** Zero WM involvement: Caps
+toggles the group in the server. Caveat: it can stop working silently
+— anything that re-runs `setxkbmap` without the options (desktop
+applets, NixOS reconfigures, session scripts) drops the toggle, and
+with multi-layout keymaps Caps then capitalizes again with no visual
+indication beyond homgb's layout label. homgb still notices the
+switches (the state-notify listener) when it works.
+
 ## Architecture
 
 One process:
