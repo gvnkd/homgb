@@ -259,6 +259,9 @@ theme:
     # Tray menus and hover tooltips share this palette.
     menu.bg: "#333a52"
     menu.border: "#8c9ec7"
+    # active workspace / focused-window highlight (inactive items stay
+    # in the default text color)
+    bar.ws-active: "#8c9ec7"
 
   sizes:
     # Margins/paddings (px). theme.sizes.tray.icon-size and
