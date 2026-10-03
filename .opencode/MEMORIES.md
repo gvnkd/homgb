@@ -227,6 +227,18 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   every-frame usage error auto-opened ImGui's Debug##Default window
   (the "V Debug" under the workspaces). Measure-only variants
   (measureWorkspaces/measureWinButtons) exist for the pre-Begin math.
+- IDLE CPU (2026-10-03): 2-2.5% at "idle" came from TWO unconditional
+  wake paths rendering full frames on background churn: (1)
+  startBarEvents pushed `wake` on EVERY root X event (steam/chromium
+  map/unmap/configure storm) and sawEvents is indiscriminate →
+  render; fix: dirty flag only, processed within 0.25s by the
+  deadline cap, render gated by upBarChanged (max bar-update latency
+  now 0.25s). (2) SNI updateHandler woke on EVERY host update incl.
+  Tooltip/Title (steam's download progress lives in its tooltip);
+  fix: applyUpdate returns whether state changed, wake only then.
+  Diagnostic recipe: HOMGB_DEBUG=1 counts renders ("tray surface="
+  lines/s); strace -c -p needs the starter's namespace (ptrace_scope
+  blocks other sessions' attaches).
 - RENDER-ON-WAKE since 2026-10-03 (power rework): mainLoop blocks in
   SDL_WaitEventTimeout (SDL3.pumpEventsTimeout, src/Homgb/SDL3.hs) until
   the nearest deadline (nextDeadline in Homgb.hs: popup expiry via

@@ -200,28 +200,44 @@ runHost wake tState client = go (10 :: Int)
               _ -> return ()
   -- the dbus client keeps its own dispatcher thread alive; signal
   -- callbacks (our updateHandler) run there, so this thread may exit
-
 -- | Apply a host update to the tray TVar and wake the render loop
--- (the handler runs on the dbus dispatcher thread).
+-- (the handler runs on the dbus dispatcher thread). The wake is
+-- gated on an actual state change: busy items (steam puts download
+-- progress in its TOOLTIP) emit a steady stream of Tooltip/Title
+-- updates that homgb does not render — waking per update was another
+-- constant-CPU-at-idle source.
 updateHandler :: IO () -> TVar TrayState -> SHost.UpdateHandler
 updateHandler wake tState updateType info = do
-  atomically $ modifyTVar' tState $ \s ->
-    let name = itemServiceName info
-        items = trayItems s
-        bump item = item { tiVersion = trayVersion s + 1 }
-    in case updateType of
-      ItemAdded ->
-        s { trayItems = items ++ [TrayItem info (trayVersion s + 1)]
+  changed <- atomically $ do
+    s <- readTVar tState
+    let (s', changed') = applyUpdate updateType info s
+    writeTVar tState s'
+    return changed'
+  when changed wake
+
+applyUpdate :: UpdateType -> ItemInfo -> TrayState -> (TrayState, Bool)
+applyUpdate updateType info s =
+  let name = itemServiceName info
+      items = trayItems s
+      bump item = item { tiVersion = trayVersion s + 1 }
+  in case updateType of
+    ItemAdded ->
+      ( s { trayItems = items ++ [TrayItem info (trayVersion s + 1)]
           , trayVersion = trayVersion s + 1 }
-      ItemRemoved ->
-        s { trayItems = filter (\i -> itemServiceName (tiInfo i) /= name) items }
-      IconUpdated -> updateMatching s items name bump
-      OverlayIconUpdated -> updateMatching s items name bump
-      _ -> s
-  wake
+      , True )
+    ItemRemoved ->
+      let remaining = filter (\i -> itemServiceName (tiInfo i) /= name) items
+      in (s { trayItems = remaining }, length remaining /= length items)
+    IconUpdated -> updateMatching s items name bump
+    OverlayIconUpdated -> updateMatching s items name bump
+    _ -> (s, False)
   where
-    updateMatching s items name f =
-      s { trayItems = map (\i -> if itemServiceName (tiInfo i) == name
-                                   then f i else i) items
-        , trayVersion = trayVersion s + 1 }
+    updateMatching s' items' name' f =
+      let (matched, out) = foldr
+            (\i (m, acc) -> if itemServiceName (tiInfo i) == name'
+                              then (True, f i : acc)
+                              else (m, i : acc))
+            (False, []) items'
+      in ( s' { trayItems = out, trayVersion = trayVersion s' + 1 }
+         , matched )
  

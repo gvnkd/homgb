@@ -112,11 +112,15 @@ newBarState = do
 -- slow 5s safety re-sync for what root selection cannot see (e.g.
 -- _NET_WM_NAME changes on client windows, which need per-window
 -- selection). This replaces the old unconditional 5Hz polling.
--- `wake` interrupts the render loop's timed SDL wait: a root restack
--- with unchanged root properties would otherwise sit unprocessed
--- until the next deadline.
+-- NO wake here: busy apps (steam, chromium) emit a steady stream of
+-- root events, and a wake makes the render loop redraw every surface
+-- for each one (sawEvents is indiscriminate) even when the EWMH
+-- state is unchanged — that was a constant 2-2.5% CPU at idle. The
+-- dirty flag is picked up within 0.25s by the main loop's deadline
+-- cap, and the redraw gate is upBarChanged, so churn costs a cheap
+-- re-read, not a render.
 startBarEvents :: TVar Bool -> IO () -> IO ()
-startBarEvents dirty wake = do
+startBarEvents dirty _wake = do
   mDpy <- catch (Just <$> openDisplay "")
     (\(_ :: IOException) -> return Nothing)
   forM_ mDpy $ \dpy -> do
@@ -126,7 +130,6 @@ startBarEvents dirty wake = do
     void $ forkIO $ forever' $ allocaXEvent $ \ev -> do
       nextEvent dpy ev
       atomically $ writeTVar dirty True
-      wake
   where
     forever' act = act >> forever' act
 
