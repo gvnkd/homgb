@@ -266,11 +266,24 @@ drawPopupSurface app = do
             - fromMaybe (configDistanceRight config) (notiRight n) - width - 2
           surfX = minimum (map idealX notis)
           surfW = maximum [ idealX n + width + 4 | n <- notis ] - surfX
-          -- margin-top overrides are ROOT y positions; the surface
+      mStrut <- readTVarIO (appStrut app)
+      let -- margin-top overrides are ROOT y positions; the surface
           -- top hugs the highest popup so overrides move the window,
-          -- not just the content
-          rootTop n = fromMaybe (configDistanceTop config) (notiTop n)
-          baseTop = minimum (configDistanceTop config : map rootTop notis)
+          -- not just the content. The DEFAULT root is the configured
+          -- margin-top, but never inside the bar's reserved strip:
+          -- when the popup's monitor intersects the bar strut, the
+          -- strut depth (surface height + strut-gap) wins if larger —
+          -- popups must render right under the bar, not beneath it
+          strutDepth = case mStrut of
+            Just (depth, sx0, sx1)
+              | monX mon <= sx1
+                && monX mon + monW mon - 1 >= sx0 -> Just depth
+            _ -> Nothing
+          topDefault = case strutDepth of
+            Just d -> max d (configDistanceTop config)
+            Nothing -> configDistanceTop config
+          rootTop n = fromMaybe topDefault (notiTop n)
+          baseTop = minimum (topDefault : map rootTop notis)
       total <- go tState config surfX baseTop
                  (map idealX notis) (map rootTop notis) heights notis
       resizeSurfaceWindow surf surfW (floor total + 4)
