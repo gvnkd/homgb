@@ -595,6 +595,16 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   without WM_CLASS and xid 0 are ignored (layout stays, nothing
   remembered). Layouts switched OUTSIDE homgb (raw xkb tools) are not
   attributed to any app — same limitation as KDE.
+- Per-app VERIFIED on node 2026-10-03 (DISPLAY :0): focus alacritty →
+  NextLayout (ru) → focus chromium → NextLayout (us) → back: group
+  restored per class (read via a tiny xcb tool; xcb_xkb_get_state needs
+  xcb_xkb_use_extension first — /tmp/opencode/xkbg.c). GOTCHA that cost
+  a false "won't work": the running homgb was the PRE-feature binary
+  (cabal list-bin path in homgb-start — process keeps OLD code after
+  `cabal build`; MUST kill+restart to pick up a build). Also: don't
+  truncate a live log file (`> log`) — the fd offset leaves sparse
+  garbage and interleaved lines become unreadable; note the offset and
+  tail from it instead.
 - Rotation no-op trap: the layout list comes from root
   `_XKB_RULES_NAMES` (live). If the X session has ONE layout
   (`setxkbmap -query` shows just "us"), NextLayout locks group 0 and
