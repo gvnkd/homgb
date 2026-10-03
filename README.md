@@ -76,11 +76,13 @@ optional compositor for translucency. Recommended fonts:
 ## Configuration
 
 `~/.config/homgb/config.yml`; when absent, the built-in defaults
-(`defaultConfigText` in `src/Homgb/Config.hs`) apply — copy that as a
-starting point. Sections: `notification` (popups, image, dbus,
-modifications), `notification-center`, `buttons`, `tray` (icon size,
-spacing, position, monitor, `behind-windows`), `bar` (`layout`,
-`workspaces`, `windows`, `window-title-max`, `struts`), `theme`
+(`defaultConfigText` in `src/Homgb/Config.hs`) apply.
+`config.example.yml` in the repo lists every option with detailed
+comments — copy it as a starting point. Sections: `notification`
+(popups, image, dbus, modifications), `notification-center`,
+`buttons`, `tray` (icon size, spacing, position, monitor,
+`behind-windows`, `show-passive`), `bar` (`layout`, `workspaces`,
+`windows`, `window-title-max`, `struts`), `theme`
 (font/colors/sizes), `keyboard`.
 
 ## Required fonts

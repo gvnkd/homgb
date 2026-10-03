@@ -1,0 +1,282 @@
+# homgb example configuration — every available option, commented.
+# Copy to ~/.config/homgb/config.yml and edit. When the file is
+# absent, these same defaults apply (see defaultConfigText in
+# src/Homgb/Config.hs). All keys are optional; omit anything you
+# don't need. Key order does not matter.
+
+# -------------------------------------------------------------------
+# Startup
+# -------------------------------------------------------------------
+
+# Shell command executed once at startup (before any surface maps).
+startup-command: ""
+
+# -------------------------------------------------------------------
+# Notification center panel (the toggleable history panel, M-n)
+# -------------------------------------------------------------------
+notification-center:
+
+  # Distance from the top of the monitor to the panel's top edge (px).
+  # Inherited by notification.popup.margin-top if that is unset.
+  margin-top: 0
+
+  # Distance from the monitor bottom to the panel's bottom edge (px).
+  margin-bottom: 0
+
+  # Distance from the monitor's right edge (px).
+  margin-right: 0
+
+  # Panel width (px).
+  width: 500
+
+  # Xinerama monitor index the panel lives on. Out-of-range values
+  # clamp to the last monitor.
+  monitor: 0
+
+  # Place the panel on the monitor that currently contains the mouse
+  # pointer (overrides monitor).
+  follow-mouse: false
+
+  # Newest notifications first in the history list.
+  new-first: true
+
+  # Don't add transient notifications to the center history.
+  ignore-transient: false
+
+  # Hide the panel when the pointer leaves it.
+  hide-on-mouse-leave: true
+
+  # Action buttons rendered at the top of the panel (a grid of
+  # clickable shell commands).
+  buttons:
+    buttons-per-row: 5    # grid columns
+    buttons-height: 60    # row height (px)
+    buttons-margin: 2     # spacing between buttons (px)
+    actions:
+      - label: "lock"
+        command: "xscreensaver-command --lock"
+      # - label: "wifi"
+      #   command: "nm-connection-editor"
+
+# -------------------------------------------------------------------
+# Notifications
+# -------------------------------------------------------------------
+notification:
+
+  # Replace matched fields of incoming notifications before display.
+  # Rules are applied in order; `match` keys compare against the
+  # notification's current (pre-rule) fields. Available match keys:
+  #   title, body, app-name, urgency (low|normal|critical), time
+  # Available modify keys:
+  #   title, body, app-name, app-icon (freedesktop name/path),
+  #   timeout (ms; 0 = never, <0 = default-timeout),
+  #   margin-right / margin-top (root-px placement override),
+  #   image (path/uri), image-size (px),
+  #   transient (bool), send-noti-closed (bool),
+  #   remove-actions (bool), action-icons (bool),
+  #   action-commands ({action-name: shell command}),
+  #   actions ([name, label, name, label, ...])
+  # A rule may instead run a `script`: the notification is encoded
+  # as JSON on stdin and the script prints a modify block.
+  modifications:
+    - match: {app-name: "firefox", urgency: "critical"}
+      modify:
+        timeout: 0
+    # - match: {app-name: "some-app"}
+    #   script: "my-filter.sh"
+
+  # Honor action icons sent by the client.
+  use-action-icons: true
+
+  # Treat the body as markup (false = strip all tags to plain text).
+  use-markup: true
+
+  # Decode HTML entities (&amp; etc.) in summary/body.
+  parse-html-entities: true
+
+  # Notification daemon behavior on the bus.
+  dbus:
+    # Emit org.freedesktop.Notifications.NotificationClosed when a
+    # notification is dismissed/expired (deadd parity; most clients
+    # don't need it).
+    send-noti-closed: false
+
+  # App icon resolution for notifications without an explicit icon.
+  app-icon:
+    # Guess an icon from the app name via the freedesktop icon theme.
+    guess-icon-from-name: true
+
+  # Popup stack (corner toasts).
+  popup:
+
+    # Fallback lifetime in MILLISECONDS, used when the client sends
+    # expire_timeout < 0 (the common case — notify-send without -t).
+    # 0 means popups never expire on their own.
+    default-timeout: 10000
+
+    # Distance from the monitor top to the first popup (px).
+    # Inherited from notification-center.margin-top when unset.
+    margin-top: 50
+
+    # Distance from the monitor right edge to the popup stack (px).
+    # Inherited from notification-center.margin-right when unset.
+    margin-right: 50
+
+    # Vertical gap between stacked popups (px).
+    margin-between: 20
+
+    # Popup width (px). Heights auto-fit the content.
+    width: 300
+
+    # Monitor index for the popup stack.
+    monitor: 0
+
+    # Popups appear on the monitor containing the pointer.
+    follow-mouse: false
+
+    # Wrap the body after this many lines (0 = no limit).
+    max-lines-in-body: 3
+
+    # Don't render the body at all when it is empty.
+    hide-body-if-empty: false
+
+    # Mouse buttons on a popup (x11 button names).
+    click-behavior:
+      dismiss: mouse1              # left click closes the popup
+      default-action: mouse3       # right click invokes the default action
+
+  # Inline image hints (notify-send --hint=... or image-data).
+  image:
+    size: 100            # longest side (px)
+    margin-top: 15       # image margins (px)
+    margin-left: 15
+    margin-bottom: 15
+    margin-right: 0
+
+# -------------------------------------------------------------------
+# Tray / status bar surface
+# -------------------------------------------------------------------
+tray:
+
+  # SNI tray icon size (px). Overridden by theme.sizes.tray.icon-size
+  # when that is set.
+  icon-size: 22
+
+  # Gap between icons and bar widgets (px). Overridden by
+  # theme.sizes.tray.spacing.
+  spacing: 4
+
+  # Corner placement when bar.layout is false (legacy shrink-wrap
+  # mode): top-right | top-left | bottom-right | bottom-left.
+  position: top-right
+
+  # Monitor index for the tray surface.
+  monitor: 0
+
+  # Tray follows the pointer's monitor.
+  follow-mouse: false
+
+  # true: the tray maps BEHIND every window (nothing may overlap it
+  # or it becomes unclickable; see tray.struts for the usable
+  # alternative). false: normal panel stacking, above app windows.
+  behind-windows: false
+
+  # Show SNI items that report Status=Passive. Many apps (Telegram,
+  # Electron clients) mark themselves Passive; Plasma shows them too.
+  show-passive: true
+
+# -------------------------------------------------------------------
+# Bar (xmobar replacement; rendered inside the tray surface)
+# -------------------------------------------------------------------
+bar:
+
+  # Full-width bar spanning the monitor: [workspaces][title][spacer]
+  # [icons][layout indicator][clock][date]. false: legacy
+  # shrink-wrapped corner tray with workspace buttons at its left.
+  layout: true
+
+  # Workspace buttons (from the EWMH root properties; left-click
+  # switches workspace).
+  workspaces: true
+
+  # Taskbar: clickable buttons for the current workspace's windows
+  # (between the title and the spacer).
+  windows: false
+
+  # Active-window title cap, in CHARACTERS. The title also shrinks
+  # to whatever space the spacer leaves before truncating with "…".
+  window-title-max: 200
+
+  # Publish _NET_WM_STRUT_PARTIAL so the WM (avoidStruts) reserves
+  # the bar's strip — app windows never overlap the bar.
+  struts: true
+
+# -------------------------------------------------------------------
+# Theming
+# -------------------------------------------------------------------
+theme:
+
+  font:
+    # Fontconfig family name (fc-match) or absolute path to a
+    # TTF/OTF file. Loaded in every surface context; the default
+    # ImGui font (no Cyrillic, tiny) is used when unset.
+    family: "Noto Sans"
+    # Font size (px). Doubling this scales the whole bar.
+    size: 28
+    # Include Cyrillic glyph ranges (required for Russian text).
+    cyrillic: true
+    # Extra fonts merged into the primary (glyph fallback). Any
+    # fontconfig family/path; multiple candidates are tried until
+    # one loads. Emoji/symbol fonts need TrueType outlines — CFF
+    # OpenType and color-bitmap emoji (CBDT) are skipped.
+    fallbacks:
+      - "Symbola"            # monochrome emoji/symbols (e.g. battery)
+      - "Noto Emoji"
+      - "Symbols Nerd Font"  # Nerd Font icon glyphs (bar widgets)
+
+  # Colors as #RRGGBB or #RRGGBB (AA = alpha, ff = opaque).
+  colors:
+    # Notification popup palette per urgency (low = *-low variants,
+    # critical = *-critical variants; unspecified keys keep the
+    # normal values shown in the comments below).
+    popup.bg: "#212227"             # normal background
+    popup.bg-low: "#1a1a1c"         # low-urgency background
+    popup.bg-critical: "#291c1c"    # critical background
+    popup.border: "#40434a"         # normal border
+    popup.border-low: "#333338"
+    popup.border-critical: "#cc3333"
+    popup.title: "#e6e6e6"          # summary text
+    popup.title-low: "#bfbfbf"
+    popup.title-critical: "#f26666"
+    # Tray menus and hover tooltips share this palette.
+    menu.bg: "#333a52"
+    menu.border: "#8c9ec7"
+
+  sizes:
+    # Margins/paddings (px). theme.sizes.tray.icon-size and
+    # theme.sizes.tray.spacing OVERRIDE tray.icon-size/tray.spacing.
+    tray:
+      icon-size: 22
+      spacing: 4
+      padding-x: 8
+      padding-y: 8
+    popup:
+      padding-x: 8
+      padding-y: 8
+    menu:
+      padding-x: 8
+      padding-y: 8
+
+# -------------------------------------------------------------------
+# Keyboard layout manager
+# -------------------------------------------------------------------
+keyboard:
+
+  # Rotation list. Empty = read live from the X server's
+  # _XKB_RULES_NAMES (setxkbmap us,ru configures both). Group lock
+  # needs the layouts present in the X keymap — with a single X
+  # layout, switching is a no-op regardless of this setting.
+  layouts: []
+
+  # Show the current-layout button in the bar (click rotates).
+  indicator: true
