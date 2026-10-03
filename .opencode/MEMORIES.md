@@ -188,9 +188,37 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   every-frame usage error auto-opened ImGui's Debug##Default window
   (the "V Debug" under the workspaces). Measure-only variants
   (measureWorkspaces/measureWinButtons) exist for the pre-Begin math.
-  Remaining per-frame costs: z-order re-assert (2 X calls / 200ms),
-  full-rate rendering of mostly-static surfaces (the real power item;
-  render-on-demand is a future refactor).
+- RENDER-ON-WAKE since 2026-10-03 (power rework): mainLoop blocks in
+  SDL_WaitEventTimeout (SDL3.pumpEventsTimeout, src/Homgb/SDL3.hs) until
+  the nearest deadline (nextDeadline in Homgb.hs: popup expiry via
+  expiryAt, clock minute rollover, XKB poll, bar 5s re-sync, tooltip
+  staleness/hover-delay) or an SDL input event / pushed user event
+  (SDL_RegisterEvents + SDL_PushEvent; appUserEvent/appWake in
+  AppState). frameUpkeep returns Upkeep change flags; mainLoop renders
+  only when events arrived or something changed — idle = 0% CPU.
+  Wake producers: daemon notify/close/expire, SNI updateHandler,
+  menu fetchLayout/watch/openItemMenu, Control NextLayout/ToggleCenter,
+  startBarEvents (root events), offerTooltip (hover-delay deadline),
+  renderMenus (while a menu is open, ~20Hz for the outside-click
+  poll). SURFACE GOTCHAS: (1) a popup's measured height is only known
+  after one draw — popUnmeasured forces one extra popup draw;
+  (2) clock widgets need the minute-rollover deadline or the bar
+  freezes while idle; (3) tooltips need the staleness deadline
+  (tiLastSeen+0.2) or a pointer that left without an SDL event leaves
+  the tooltip up forever; (4) hover-delay needs tiHoverAt (set even
+  when the widget has no tooltip lines) or a stationary pointer never
+  pops the tooltip. XKB pollGroup moved from renderIndicator to
+  frameUpkeep (1s deadline, returns Bool = group changed). Stacking
+  re-assert is EVENT-DRIVEN: same dirty gate as the bar, and
+  reassertStacking takes the current root children (homgb_query_tree
+  C shim — the X11 package does NOT bind XQueryTree; free with
+  homgb_x_free) and skips the raise/lower while the children list
+  equals sStackOrder (fingerprint TVar per surface). While tray.xembed
+  host is active the deadline is +200ms (dock requests arrive on the
+  X queue, pumped in renderTray) — still 0% CPU, ~13 wakeups/s.
+  homgb_ensure_sticky already read-compares (only writes on drift).
+  Verified 2026-10-03: idle 0.0% CPU (was ~100%), popup Notify →
+  viewable, 5s expiry → unmapped.
 - SNI tooltips: own surface (homgb-tooltip, EWMH TOOLTIP, created
   LAST = topmost float) — in-window tooltips clip against the bar's
   54px viewport. offerTooltip (Tray/Render) writes trayTooltip TVar

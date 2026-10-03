@@ -79,7 +79,7 @@ import Homgb.Theme (Theme(..))
 data WinInfo = WinInfo
   { wiXid :: CLong
   , wiTitle :: T.Text
-  } deriving (Show)
+  } deriving (Show, Eq)
 
 -- | Cached EWMH desktop/taskbar state (see 'refreshBar').
 data BarState = BarState
@@ -94,7 +94,7 @@ data BarState = BarState
   , barCovered :: Bool
     -- ^ a window overlaps the bar's strip (ToggleStruts, fullscreen
     --   layouts, floated windows): the bar surface hides
-  } deriving (Show)
+  } deriving (Show, Eq)
 
 newBarState :: IO (TVar BarState)
 newBarState = do
@@ -109,8 +109,11 @@ newBarState = do
 -- slow 5s safety re-sync for what root selection cannot see (e.g.
 -- _NET_WM_NAME changes on client windows, which need per-window
 -- selection). This replaces the old unconditional 5Hz polling.
-startBarEvents :: TVar Bool -> IO ()
-startBarEvents dirty = do
+-- `wake` interrupts the render loop's timed SDL wait: a root restack
+-- with unchanged root properties would otherwise sit unprocessed
+-- until the next deadline.
+startBarEvents :: TVar Bool -> IO () -> IO ()
+startBarEvents dirty wake = do
   mDpy <- catch (Just <$> openDisplay "")
     (\(_ :: IOException) -> return Nothing)
   forM_ mDpy $ \dpy -> do
@@ -120,6 +123,7 @@ startBarEvents dirty = do
     void $ forkIO $ forever' $ allocaXEvent $ \ev -> do
       nextEvent dpy ev
       atomically $ writeTVar dirty True
+      wake
   where
     forever' act = act >> forever' act
 

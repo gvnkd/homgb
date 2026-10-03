@@ -20,6 +20,7 @@ module Homgb.Surface
   , moveSurfaceWindow
   , surfaceWindowSize
   , reassertStacking
+  , rootChildren
   ) where
 
 import Control.Concurrent.STM (atomically)
@@ -28,8 +29,13 @@ import Control.Monad (forM_, unless, when)
 import Data.Word (Word32, Word64)
 import DearImGui (Context)
 import qualified DearImGui.Raw as Raw (createContext, setCurrentContext)
+import Foreign.C.Types (CUInt(..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Array (peekArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek)
 import qualified Graphics.X11.Types as X11 (Window)
+import Graphics.X11.Xlib.Display (defaultRootWindow)
 import Graphics.X11.Xlib.Types (Display(..))
 import Linear (V2(..))
 import System.IO (hPutStrLn, stderr)
@@ -63,6 +69,10 @@ data Surface = Surface
   , sShown :: TVar Bool
   , sLastPos :: TVar (Maybe (Int, Int))
   , sLastSize :: TVar (Maybe (Int, Int))
+  , sStackOrder :: TVar (Maybe [Word64])
+    -- ^ root children (bottom-to-top) at the last stacking re-assert;
+    -- the render loop skips the raise/lower when the order is
+    -- unchanged (event-driven re-assert instead of a 5Hz timer)
   }
 
 data Surfaces = Surfaces
@@ -88,6 +98,7 @@ createSurface name (V2 w h) raiseOnMap = do
   shown <- newTVarIO False
   lastPos <- newTVarIO Nothing
   lastSize <- newTVarIO Nothing
+  stackOrder <- newTVarIO Nothing
   return Surface
     { sName = name
     , sWindow = window
@@ -99,6 +110,7 @@ createSurface name (V2 w h) raiseOnMap = do
     , sShown = shown
     , sLastPos = lastPos
     , sLastSize = lastSize
+    , sStackOrder = stackOrder
     }
 
 -- | Tag with EWMH props; call BEFORE the window is mapped. The
@@ -166,19 +178,46 @@ hideSurface dpy surf = do
 surfaceShown :: Surface -> IO Bool
 surfaceShown = readTVarIO . sShown
 
--- | Re-assert this surface's stacking position (called periodically
--- from the render loop: WMs restack managed windows on focus/layout
+-- | Re-assert this surface's stacking position when the root's
+-- stacking order changed (WMs restack managed windows on focus/layout
 -- changes, undoing the map-time raise/lower; without this the tray
--- randomly jumps above app windows and back). No-op while hidden.
-reassertStacking :: Display -> Surface -> IO ()
-reassertStacking dpy surf = do
+-- randomly jumps above app windows and back). `children` is the
+-- CURRENT root children list (bottom-to-top, see 'rootChildren');
+-- when it equals the order recorded at the last re-assert the X
+-- raise/lower is skipped entirely, so map/unmap/configure churn that
+-- did not move our window costs one cheap compare, not X requests.
+-- No-op while hidden.
+reassertStacking :: Display -> [Word64] -> Surface -> IO ()
+reassertStacking dpy children surf = do
   shown <- surfaceShown surf
   when shown $ do
-    mId <- surfaceX11Id surf
-    forM_ mId $ \wid ->
-      if sRaiseOnMap surf
-        then c_x_map dpy (fromIntegral wid)
-        else c_x_map_lowered dpy (fromIntegral wid)
+    prev <- readTVarIO (sStackOrder surf)
+    unless (prev == Just children) $ do
+      mId <- surfaceX11Id surf
+      forM_ mId $ \wid ->
+        if sRaiseOnMap surf
+          then c_x_map dpy (fromIntegral wid)
+          else c_x_map_lowered dpy (fromIntegral wid)
+      atomically $ writeTVar (sStackOrder surf) (Just children)
+
+-- | Root window children in bottom-to-top stacking order (XQueryTree
+-- order; xwininfo lists top-first).
+rootChildren :: Display -> IO [Word64]
+rootChildren dpy = do
+  alloca $ \nPtr -> do
+    kids <- c_query_tree dpy (defaultRootWindow dpy) nPtr
+    if kids == nullPtr
+      then return []
+      else do
+        n <- peek nPtr
+        ws <- peekArray (fromIntegral n :: Int) kids
+        c_x_free kids
+        return (map fromIntegral (ws :: [X11.Window]))
+
+foreign import ccall "homgb_query_tree" c_query_tree
+  :: Display -> X11.Window -> Ptr CUInt -> IO (Ptr X11.Window)
+foreign import ccall "homgb_x_free" c_x_free
+  :: Ptr a -> IO ()
 
 -- | Configure calls are suppressed when nothing changed: repeated
 -- XMove/XResize make xmonad restack/refocus the window every frame

@@ -41,7 +41,7 @@ import Homgb.Bar
   , sameLineS, framePadX, framePadY )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
-import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
+import Homgb.Keyboard (KeyboardEnv(..), currentLayout, rotateLayout)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
 import Homgb.Tray.Embed (XEmbedIcon, pumpEmbedEvents, layoutEmbedIcons)
@@ -94,26 +94,31 @@ offerTooltip :: TrayEnv -> String -> [T.Text] -> (Int, Int) -> IO ()
 offerTooltip env key tipLines (wx, wy) = do
   hovered <- isItemHovered
   now <- getPOSIXTime
-  when (hovered && not (null tipLines)) $ do
+  when hovered $ do
     hk <- readTVarIO (trayHoverKey env)
     since <- case hk of
       Just (k, s) | k == key -> return s
       _ -> do
         atomically $ writeTVar (trayHoverKey env) (Just (key, now))
+        -- wake the render loop at the hover-delay deadline: nothing
+        -- else would re-render while the pointer sits still
+        trayWake env
         return now
-    ImVec2 mx my <- Raw.getMousePos
-    dbg <- lookupEnv "HOMGB_DEBUG"
-    case dbg of
-      Just _ -> hPutStrLn stderr $ "tooltip " ++ key ++ ": "
-        ++ show tipLines
-      Nothing -> return ()
-    atomically $ writeTVar (trayTooltip env) (Just TooltipInfo
-      { tiLines = tipLines
-      , tiRootX = floor mx + wx
-      , tiRootY = floor my + wy
-      , tiSince = since
-      , tiLastSeen = now
-      })
+    when (not (null tipLines)) $ do
+      ImVec2 mx my <- Raw.getMousePos
+      dbg <- lookupEnv "HOMGB_DEBUG"
+      case dbg of
+        Just _ -> hPutStrLn stderr $ "tooltip " ++ key ++ ": "
+          ++ show tipLines
+        Nothing -> return ()
+      atomically $ writeTVar (trayTooltip env) (Just TooltipInfo
+        { tiLines = tipLines
+        , tiRootX = floor mx + wx
+        , tiRootY = floor my + wy
+        , tiSince = since
+        , tiLastSeen = now
+        , tiHoverAt = since
+        })
 
 -- | Draw the tray into the current (tray surface) ImGui context. The
 -- tray window sits at the surface's local origin; returns the measured
@@ -472,7 +477,8 @@ renderIndicator :: TrayEnv -> Maybe KeyboardEnv -> Bool -> Float -> Ptr ()
 renderIndicator env kbEnv indicatorOn gap mainFont btn follow winPos =
   case kbEnv of
     Just kb | indicatorOn -> do
-      pollGroup kb
+      -- the group itself is polled on a 1s deadline in frameUpkeep
+      -- (render-on-wake: no per-frame polling here)
       s <- readTVarIO (kbState kb)
       let code = T.toUpper (T.take 2 (currentLayout s))
       if T.null code then return 0 else do
@@ -562,7 +568,7 @@ renderItem env textures theme _iconSize btn _traySpacing _idx item surfSize
         ++ " menu=" ++ show (menuPath info)
       Nothing -> return ()
     openItemMenu (trayClient env) (trayMenus env) info winPos
-      (floor surfH) screenSize
+      (floor surfH) screenSize (trayWake env)
 
   offerTooltip env ("icon:" ++ show (coerce name :: String))
     (filter (not . T.null) (T.lines (T.pack (tooltipText info)))) winPos

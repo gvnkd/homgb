@@ -106,8 +106,9 @@ menuKey info = case itemServiceName info of
 -- ROOT screen coordinates. It opens BELOW the tray row (like GTK/Qt
 -- tray menus), horizontally anchored at the cursor, clamped inside
 -- the screen.
-openItemMenu :: Client -> Menus -> ItemInfo -> (Int, Int) -> Int -> (Int, Int) -> IO ()
-openItemMenu client menus info trayWinPos trayH screenSize =
+openItemMenu :: Client -> Menus -> ItemInfo -> (Int, Int) -> Int -> (Int, Int)
+             -> IO () -> IO ()
+openItemMenu client menus info trayWinPos trayH screenSize wake =
   case menuPath info of
     Nothing -> return ()
     Just path -> do
@@ -145,8 +146,9 @@ openItemMenu client menus info trayWinPos trayH screenSize =
               (hideOthers key m))
             return True
       when nowVisible $ void $ forkIO $ do
-        fetchLayout client menus key
-        watch client menus key
+        fetchLayout wake client menus key
+        watch wake client menus key
+      wake
 
 -- | The menu currently being rendered (single-open invariant) and its
 -- root position, for the caller to move the menu surface window.
@@ -163,8 +165,8 @@ data MenuFrame = MenuFrame
 -- by polling XQueryPointer (root coordinates) once per frame — ImGui's
 -- own mouse position goes stale once the pointer leaves our surfaces.
 renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> Theme
-            -> (Int, Int) -> IO (Maybe MenuFrame)
-renderMenus client menus prevButtons mDisplay theme winPos = do
+            -> (Int, Int) -> IO () -> IO (Maybe MenuFrame)
+renderMenus client menus prevButtons mDisplay theme winPos wake = do
   (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
@@ -235,6 +237,9 @@ renderMenus client menus prevButtons mDisplay theme winPos = do
               Nothing -> (0, 0)
         return (MenuFrame key (px, py) size <$ mRect)
       else return Nothing
+  -- keep iterating (~20Hz) while any menu is open: the outside-click
+  -- close polls XQueryPointer edges, which only run when we render
+  when (any (\(_, _, st) -> msVisible st) (Map.elems m)) wake
   return (listToMaybe (catMaybes frames))
   where
     combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
@@ -313,8 +318,8 @@ toggleLabel node =
 stripMnemonic :: T.Text -> T.Text
 stripMnemonic = T.filter (/= '_')
 
-fetchLayout :: Client -> Menus -> String -> IO ()
-fetchLayout client menus key = do
+fetchLayout :: IO () -> Client -> Menus -> String -> IO ()
+fetchLayout wake client menus key = do
   m <- readTVarIO menus
   case Map.lookup key m of
     Nothing -> return ()
@@ -342,9 +347,10 @@ fetchLayout client menus key = do
               atomically $ modifyTVar' menus $
                 Map.adjust (\(i, p, s) ->
                   (i, p, s { msTree = Just tree, msRevision = revision })) key
+              wake
 
-watch :: Client -> Menus -> String -> IO ()
-watch client menus key = do
+watch :: IO () -> Client -> Menus -> String -> IO ()
+watch wake client menus key = do
   already <- atomically $ do
     m <- readTVar menus
     case Map.lookup key m of
@@ -358,6 +364,6 @@ watch client menus key = do
     case Map.lookup key m of
       Just (info, path, _) ->
         void $ registerLayoutUpdated client (itemServiceName info) path
-          $ \_ -> fetchLayout client menus key
+          $ \_ -> fetchLayout wake client menus key
       Nothing -> return ()
  

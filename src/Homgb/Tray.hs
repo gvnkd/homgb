@@ -60,6 +60,9 @@ data TooltipInfo = TooltipInfo
     -- ^ when the current hover started (delay before showing)
   , tiLastSeen :: POSIXTime
     -- ^ last frame the hovered item was hovered (staleness check)
+  , tiHoverAt :: POSIXTime
+    -- ^ same as tiSince, but set even when the hovered widget has no
+    -- tooltip lines: drives the render loop's hover-delay deadline
   }
 
 data TrayEnv = TrayEnv
@@ -80,10 +83,14 @@ data TrayEnv = TrayEnv
     -- ^ XEmbed-docked icon windows (legacy tray protocol)
   , trayXEmbedHost :: TVar (Maybe EmbedState)
     -- ^ set after the selection is acquired (tray.xembed)
+  , trayWake :: IO ()
+    -- ^ push a user event on the SDL queue (render-on-wake): DBus
+    -- host callbacks and menu fetches run on dispatcher threads and
+    -- must wake the blocked render loop when tray state changes
   }
 
-startTray :: IO TrayEnv
-startTray = do
+startTray :: IO () -> IO TrayEnv
+startTray wake = do
   tState <- newTVarIO $ TrayState [] 0
   textures <- newTVarIO Map.empty
   menus <- newMenus
@@ -95,9 +102,9 @@ startTray = do
   mDisplay <- catch (Just <$> openDisplay "") ignoreIO
   forM_ mDisplay installErrorHandler
   client <- connectSession
-  _ <- forkIO $ runHost tState client
+  _ <- forkIO $ runHost wake tState client
   return $ TrayEnv tState client textures menus prevButtons mDisplay
-    tooltip hoverKey xembed xembedHost
+    tooltip hoverKey xembed xembedHost wake
 
 ignoreIO :: IOException -> IO (Maybe Display)
 ignoreIO _ = return Nothing
@@ -134,8 +141,8 @@ reapZombieItems client tState = do
           _ -> return False
         Left _ -> return False
 
-runHost :: TVar TrayState -> Client -> IO ()
-runHost tState client = go (10 :: Int)
+runHost :: IO () -> TVar TrayState -> Client -> IO ()
+runHost wake tState client = go (10 :: Int)
   where
     go 0 = hPutStrLn stderr "tray: failed to start SNI host"
     go n = do
@@ -152,7 +159,7 @@ runHost tState client = go (10 :: Int)
           threadDelay 1000000
           go (n - 1)
         Just host -> do
-          _ <- SHost.addUpdateHandler host (updateHandler tState)
+          _ <- SHost.addUpdateHandler host (updateHandler wake tState)
           hPutStrLn stderr "tray: SNI host started"
           -- The host can silently miss items that re-registered in
           -- the window between the watcher name appearing and the
@@ -178,9 +185,10 @@ runHost tState client = go (10 :: Int)
   -- the dbus client keeps its own dispatcher thread alive; signal
   -- callbacks (our updateHandler) run there, so this thread may exit
 
--- | Apply a host update to the tray TVar.
-updateHandler :: TVar TrayState -> SHost.UpdateHandler
-updateHandler tState updateType info =
+-- | Apply a host update to the tray TVar and wake the render loop
+-- (the handler runs on the dbus dispatcher thread).
+updateHandler :: IO () -> TVar TrayState -> SHost.UpdateHandler
+updateHandler wake tState updateType info = do
   atomically $ modifyTVar' tState $ \s ->
     let name = itemServiceName info
         items = trayItems s
@@ -194,6 +202,7 @@ updateHandler tState updateType info =
       IconUpdated -> updateMatching s items name bump
       OverlayIconUpdated -> updateMatching s items name bump
       _ -> s
+  wake
   where
     updateMatching s items name f =
       s { trayItems = map (\i -> if itemServiceName (tiInfo i) == name

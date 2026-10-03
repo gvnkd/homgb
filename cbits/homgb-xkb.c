@@ -65,11 +65,25 @@ void homgb_set_dock_props(Display *dpy, Window win) {
   XFlush(dpy);
 }
 
+/* Root children in bottom-to-top stacking order (XQueryTree order;
+ * xwininfo lists top-first). Returns the X-mallocated kids array with
+ * the count in *n; the caller frees with XFree. NULL on failure. */
+Window *homgb_query_tree(Display *dpy, Window root, unsigned int *n) {
+  Window root_ret, parent, *kids = NULL;
+  unsigned int count = 0;
+  *n = 0;
+  if (!XQueryTree(dpy, root, &root_ret, &parent, &kids, &count) || !kids)
+    return NULL;
+  *n = count;
+  return kids;
+}
+
+void homgb_x_free(void *p) { if (p) XFree(p); }
+
 /* Re-asserts _NET_WM_DESKTOP=0xFFFFFFFF if the WM overwrote it (WMs
  * assign a desktop when they adopt the window, racing the initial
  * property set). Called periodically from a dedicated display. */
-void homgb_ensure_sticky(Display *dpy, Window win) {
-  Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", True);
+void homgb_ensure_sticky(Display *dpy, Window win) {  Atom desktopAtom = XInternAtom(dpy, "_NET_WM_DESKTOP", True);
   if (desktopAtom == None) return;
   Atom type = None;
   int fmt = 0;

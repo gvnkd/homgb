@@ -6,6 +6,7 @@ import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Word (Word32)
 
 import Homgb.Bar (BarState, newBarState)
 import Homgb.Keyboard (KeyboardEnv)
@@ -30,8 +31,6 @@ data AppState = AppState
     -- ^ Xinerama monitor list (single entry on single-screen setups)
   , appPointer :: TVar (Int, Int)
     -- ^ last polled pointer root coordinates (for follow-mouse)
-  , appStackTick :: TVar POSIXTime
-    -- ^ last time the surface stacking was re-asserted (z-order)
   , appBar :: TVar BarState
     -- ^ cached EWMH desktop/workspace state (bar section)
   , appBarDirty :: TVar Bool
@@ -46,16 +45,20 @@ data AppState = AppState
   , appTheme :: Theme
   , appCenterVisible :: TVar Bool
     -- ^ notification center panel visibility (DBus ToggleCenter)
+  , appUserEvent :: Word32
+    -- ^ registered SDL_EVENT_USER type: DBus/X threads push it to
+    -- wake the render loop out of its timed wait (render-on-wake)
+  , appWake :: IO ()
+    -- ^ push a user event on the SDL queue (see appUserEvent)
   }
 
 initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
                 -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
-                -> IO AppState
-initialAppState tState tray kb surfaces screenSize monitors theme centerVisible = do
+                -> Word32 -> IO () -> IO AppState
+initialAppState tState tray kb surfaces screenSize monitors theme centerVisible userEv wake = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
-  stackTick <- newTVarIO 0
   bar <- newBarState
   barDirty <- newTVarIO True
   barTick <- newTVarIO 0
@@ -70,11 +73,12 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
     , appScreenSize = screenSize
     , appMonitors = monitors
     , appPointer = pointer
-    , appStackTick = stackTick
     , appBar = bar
     , appBarDirty = barDirty
     , appBarTick = barTick
     , appStrut = strut
     , appTheme = theme
     , appCenterVisible = centerVisible
+    , appUserEvent = userEv
+    , appWake = wake
     }

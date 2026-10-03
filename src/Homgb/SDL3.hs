@@ -24,10 +24,13 @@ module Homgb.SDL3
   , makeCurrent
   , swapWindow
   , pumpEvents
+  , pumpEventsTimeout
+  , registerUserEvent
+  , pushWakeEvent
   , x11WindowId
   ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
 import Data.Word (Word32, Word64)
@@ -35,9 +38,10 @@ import DearImGui (Context)
 import qualified DearImGui.Raw as Raw (setCurrentContext)
 import Foreign.C.ConstPtr (ConstPtr(..))
 import Foreign.C.String (peekCString, withCString)
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek, peekByteOff)
+import Foreign.Storable (peek, peekByteOff, poke, sizeOf)
 import Linear (V2(..))
 import System.Exit (exitFailure)
 
@@ -47,8 +51,11 @@ import Prelude hiding (init)
 import SDL3.Sys.Error (getError)
 import SDL3.Sys.Events
   ( SDL_Event
-  , SDL_EventType
+  , SDL_EventType(..)
   , pollEvent
+  , waitEventTimeout
+  , pushEvent
+  , registerEvents
   , pattern SDL_EVENT_QUIT
   )
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
@@ -168,9 +175,57 @@ pumpEvents routes = alloca @SDL_Event $ \ev -> drain ev False
                 Nothing -> return ()
               drain ev sawQuit
 
--- | X11 window id of the SDL window (for EWMH tagging), if running on
--- X11.
-x11WindowId :: Window -> IO (Maybe Word64)
+-- | Block up to the given number of milliseconds for events, then drain
+-- the queue. Returns (sawQuit, sawAnyEvent): when the timeout elapses
+-- with no events both are False and the caller can skip rendering
+-- entirely (render-on-wake; the idle CPU stays blocked in SDL).
+-- `userEv` is a registered SDL_EVENT_USER type used by other threads to
+-- wake the loop on state changes; it is counted as an event but not
+-- routed to an ImGui context.
+pumpEventsTimeout :: Word32 -> [(Word32, Context)] -> Int -> IO (Bool, Bool)
+pumpEventsTimeout userEv routes ms = alloca @SDL_Event $ \ev -> do
+  got <- waitEventTimeout ev (i32 (max 0 (min ms maxBoundInt32)))
+  if not got
+    then return (False, False)
+    else go ev False True
+  where
+    maxBoundInt32 = fromIntegral (maxBound :: Int32) :: Int
+    go ev sawQuit _sawAny = do
+      evType <- peek (castPtr ev :: Ptr SDL_EventType)
+      if evType == SDL_EVENT_QUIT
+        then next ev True
+        else
+          if evType /= SDL_EventType (fromIntegral userEv)
+            then do
+              wid <- peekByteOff ev 16
+              case lookup (wid :: Word32) routes of
+                Just ctx -> do
+                  Raw.setCurrentContext ctx
+                  _ <- processEvent (castPtr ev)
+                  return ()
+                Nothing -> return ()
+              next ev sawQuit
+            else next ev sawQuit
+    next ev sawQuit = do
+      pending <- pollEvent ev
+      if pending then go ev sawQuit True else return (sawQuit, True)
+
+-- | Register one application event type (SDL_RegisterEvents) for
+-- cross-thread wakeups of the render loop.
+registerUserEvent :: IO Word32
+registerUserEvent = registerEvents 1
+
+-- | Push a zeroed user event of the given type onto the SDL queue.
+-- Thread-safe; wakes the render loop out of its timed wait. Callers:
+-- DBus threads (notifications, SNI host, menus, control) and X event
+-- listeners, whenever they mutate state the renderer displays.
+pushWakeEvent :: Word32 -> IO ()
+pushWakeEvent userEv = do
+  let n = sizeOf (undefined :: SDL_Event)
+  allocaBytes n $ \ev -> do
+    fillBytes ev 0 n
+    poke (castPtr ev :: Ptr Word32) userEv
+    void (pushEvent ev)
 x11WindowId w = do
   props <- getWindowProperties w
   case props of

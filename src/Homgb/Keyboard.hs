@@ -22,7 +22,6 @@ module Homgb.Keyboard
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-import Control.Monad (when)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import System.Environment (lookupEnv)
@@ -109,13 +108,18 @@ debugLn msg = do
     Nothing -> return ()
 
 -- | Re-read the locked group if the cached value is older than 1s.
--- Called every frame from the tray indicator; the rate limit keeps
--- it to ~1 xcb roundtrip per second.
-pollGroup :: KeyboardEnv -> IO ()
+-- Called from frameUpkeep when the render loop's 1s deadline fires;
+-- returns True when the group actually changed (the tray indicator
+-- needs a redraw).
+pollGroup :: KeyboardEnv -> IO Bool
 pollGroup kb = do
   now <- getCurrentTime
   s <- readTVarIO (kbState kb)
-  when (diffUTCTime now (lsQueriedAt s) > 1) $ do
-    mGroup <- Xcb.group (kbPollConn kb)
-    atomically $ modifyTVar' (kbState kb) $ \st ->
-      st { lsGroup = maybe (lsGroup st) id mGroup, lsQueriedAt = now }
+  if diffUTCTime now (lsQueriedAt s) > 1
+    then do
+      mGroup <- Xcb.group (kbPollConn kb)
+      let newGroup = maybe (lsGroup s) id mGroup
+      atomically $ modifyTVar' (kbState kb) $ \st ->
+        st { lsGroup = newGroup, lsQueriedAt = now }
+      return (newGroup /= lsGroup s)
+    else return False

@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Homgb.Render
-  ( frameUpkeep
+  ( Upkeep(..)
+  , frameUpkeep
   , drawTraySurface
   , drawPopupSurface
   , drawMenusSurface
@@ -13,7 +14,7 @@ module Homgb.Render
 
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM (atomically)
-import Control.Monad (when, unless, forM_)
+import Control.Monad (when, unless, forM, forM_)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
 import Data.List ((\\))
@@ -52,68 +53,110 @@ import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
   , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking
-  , surfaceX11Id)
+  , rootChildren, surfaceX11Id)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
-import Homgb.Tray (TrayEnv(..), trayTextures, TooltipInfo(..), reapZombieItems)
+import Homgb.Tray (TrayEnv(..), TooltipInfo(..), reapZombieItems)
+import Homgb.Keyboard (pollGroup)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 import Homgb.WMProps (setStrutPartial)
 
--- | Per-frame state maintenance: popup expiry (checked in the frame
--- loop, no timeout threads) and, when any surface is configured
--- follow-mouse, the pointer poll that placement reads. Texture
--- uploads/pruning happen in drawPopupSurface instead: GL contexts are
--- per-surface and unshared, so popup image textures must be
--- created/deleted under the popup context.
-frameUpkeep :: AppState -> IO ()
+-- | What frameUpkeep changed this iteration; the render loop redraws
+-- only when an SDL/user event arrived or one of these is True
+-- (render-on-wake instead of a free-running loop).
+data Upkeep = Upkeep
+  { upExpired :: Bool
+    -- ^ at least one popup hit its timeout
+  , upKbChanged :: Bool
+    -- ^ the 1s XKB group poll saw a different group
+  , upBarChanged :: Bool
+    -- ^ the EWMH bar state re-read produced different state
+  , upPointerMoved :: Bool
+    -- ^ the follow-mouse pointer poll moved
+  }
+
+-- | Per-iteration state maintenance, all deadline/event-driven:
+-- popup expiry (checked when the loop wakes), the XKB group poll on
+-- its 1s deadline, the follow-mouse pointer poll (only when any
+-- surface configures follow-mouse), and — gated by the X event
+-- listener's dirty flag plus a 5s safety re-sync — the EWMH bar
+-- re-read and the stacking re-assert. Texture uploads/pruning happen
+-- in drawPopupSurface instead: GL contexts are per-surface and
+-- unshared, so popup image textures must be created/deleted under
+-- the popup context.
+frameUpkeep :: AppState -> IO Upkeep
 frameUpkeep app = do
   let tState = appNotify app
   state <- readTVarIO tState
   let config = notiConfig state
       notis = notiStList state
   now <- getCurrentTime
-  forM_ (filter (isExpired config now) notis) $ \noti ->
-    expireNotiById tState (notiId noti) Timeout
+  let due = filter (isExpired config now) notis
+  forM_ due $ \noti ->
+    expireNotiById (appWake app) tState (notiId noti) Timeout
   let followAny = configNotiFollowMouse config
         || configNotiCenterFollowMouse config
         || configTrayFollowMouse config
-  when followAny $ forM_ (trayDisplay (appTray app)) $ \dpy -> do
-    (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
-    atomically $ writeTVar (appPointer app) (fromIntegral rx, fromIntegral ry)
-
-  -- z-order re-assert: WMs restack managed windows on focus/layout
-  -- changes (xmonad puts the tray's float layer above tiled apps,
-  -- KWin uses _NET_WM_STATE) — keep the tray behind everything and
-  -- the menu above by re-lowering/re-raising shown surfaces.
-  -- The EWMH bar state, by contrast, is EVENT-DRIVEN: startBarEvents
-  -- (X event listener thread) sets appBarDirty; we re-read only then,
-  -- plus a slow 5s safety re-sync (covers what root selection cannot
-  -- see, e.g. client _NET_WM_NAME changes).
+  pointerMoved <-
+    if followAny
+      then case trayDisplay (appTray app) of
+        Just dpy -> do
+          (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
+          let p = (fromIntegral rx, fromIntegral ry)
+          old <- readTVarIO (appPointer app)
+          atomically $ writeTVar (appPointer app) p
+          return (p /= old)
+        Nothing -> return False
+      else return False
+  kbChanged <- case appKeyboard app of
+    Just kb -> pollGroup kb
+    Nothing -> return False
+  -- The EWMH bar state and the z-order re-assert are EVENT-DRIVEN:
+  -- startBarEvents (X event listener thread) sets appBarDirty on
+  -- root property changes AND restacks, and wakes the loop. We
+  -- re-read only then, plus a slow 5s safety re-sync (covers what
+  -- root selection cannot see, e.g. client _NET_WM_NAME changes).
+  -- The stacking re-assert itself is suppressed while the root
+  -- children order matches the last assert (sStackOrder
+  -- fingerprint): map/unmap/configure churn that did not move our
+  -- surfaces costs one compare, not X requests.
   nowTick <- getPOSIXTime
-  lastStack <- readTVarIO (appStackTick app)
-  when (nowTick - lastStack > 0.2) $ do
-    atomically $ writeTVar (appStackTick app) nowTick
-    forM_ (trayDisplay (appTray app)) $ \dpy -> do
-      let surfs = appSurfaces app
-      reassertStacking dpy (surfacesTray surfs)
-      reassertStacking dpy (surfacesMenus surfs)
-      reassertStacking dpy (surfacesTooltip surfs)
-    dirty <- readTVarIO (appBarDirty app)
-    lastBar <- readTVarIO (appBarTick app)
-    when (dirty || nowTick - lastBar > 5) $ do
-      atomically $ do
-        writeTVar (appBarTick app) nowTick
-        writeTVar (appBarDirty app) False
-      forM_ (trayDisplay (appTray app)) $ \dpy -> do
-        mStrut <- readTVarIO (appStrut app)
-        refreshBar dpy mStrut (appBar app)
-      -- reap SNI items whose unique bus name died without
-      -- unregistering (zombies spam the property poller and leave
-      -- stuck empty menus); close their menus too
-      removed <- reapZombieItems (trayClient (appTray app))
-                    (trayState (appTray app))
-      unless (null removed) $ atomically $ modifyTVar' (trayMenus (appTray app))
-        (Map.filterWithKey (\k _ -> k `notElem` removed))
+  dirty <- readTVarIO (appBarDirty app)
+  lastBar <- readTVarIO (appBarTick app)
+  barChanged <-
+    if dirty || nowTick - lastBar > 5
+      then do
+        atomically $ do
+          writeTVar (appBarTick app) nowTick
+          writeTVar (appBarDirty app) False
+        mChanged <- forM' (trayDisplay (appTray app)) $ \dpy -> do
+          children <- rootChildren dpy
+          let surfs = appSurfaces app
+          reassertStacking dpy children (surfacesTray surfs)
+          reassertStacking dpy children (surfacesMenus surfs)
+          reassertStacking dpy children (surfacesTooltip surfs)
+          mStrut <- readTVarIO (appStrut app)
+          oldBar <- readTVarIO (appBar app)
+          refreshBar dpy mStrut (appBar app)
+          newBar <- readTVarIO (appBar app)
+          -- reap SNI items whose unique bus name died without
+          -- unregistering (zombies spam the property poller and leave
+          -- stuck empty menus); close their menus too
+          removed <- reapZombieItems (trayClient (appTray app))
+                        (trayState (appTray app))
+          unless (null removed) $ atomically $ modifyTVar' (trayMenus (appTray app))
+            (Map.filterWithKey (\k _ -> k `notElem` removed))
+          return (oldBar /= newBar)
+        return (maybe False id mChanged)
+      else return False
+  return Upkeep
+    { upExpired = not (null due)
+    , upKbChanged = kbChanged
+    , upBarChanged = barChanged
+    , upPointerMoved = pointerMoved
+    }
+  where
+    forM' = forM
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.
@@ -275,9 +318,10 @@ drawMenusSurface :: AppState -> IO ()
 drawMenusSurface app = do
   let surf = surfacesMenus (appSurfaces app)
       env = appTray app
+  winPos <- SDL3.windowPosition (sWindow surf)
   mFrame <- renderMenus (trayClient env) (trayMenus env)
-    (trayPrevButtons env) (trayDisplay env) (appTheme app)
-    =<< SDL3.windowPosition (sWindow surf)
+    (trayPrevButtons env) (trayDisplay env) (appTheme app) winPos
+    (trayWake env)
   case mFrame of
     Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
     Just f -> do
@@ -422,7 +466,7 @@ drawCenterSurface app = do
       atomically $ writeTVar (appCenterVisible app) False
     Raw.sameLine
     clearClicked <- smallButton "clear all"
-    when clearClicked $ closeAllNotifications tState User
+    when clearClicked $ closeAllNotifications (appWake app) tState User
     Raw.separator
     -- list of persistent notifications
     forM_ (zip [0 :: Int ..] history) $ \(i, noti) -> do
@@ -433,7 +477,7 @@ drawCenterSurface app = do
       unless (T.null (notiBody noti)) $ do
         Raw.spacing
         textWrapped (notiBody noti)
-      when dismiss $ closeNotiById tState (notiId noti) User
+      when dismiss $ closeNotiById (appWake app) tState (notiId noti) User
     metrics <- lookupEnv "HOMGB_METRICS"
     case metrics of
       Just _ -> Raw.showMetricsWindow
@@ -479,7 +523,7 @@ renderPopup app tState config popupX top heightGuess noti = do
           Raw.sameLine
           closeClicked <- smallButton "x##close"
           when closeClicked $
-            closeNotiById tState (notiId noti) User
+            closeNotiById (appWake app) tState (notiId noti) User
 
           forM_ (notiPercentage noti) $ \p ->
             progressBar (realToFrac p / 100) Nothing
@@ -506,7 +550,7 @@ renderPopup app tState config popupX top heightGuess noti = do
             let imgPx = fromIntegral (notiImgSize noti)
             drawImage tex imgPx imgPx
 
-          renderActions tState noti
+          renderActions (appWake app) tState noti
 
         ImVec2 _ h <- getWindowSize
         end
@@ -526,14 +570,14 @@ renderPopup app tState config popupX top heightGuess noti = do
         hFlush stderr
         return h'
 
-renderActions :: TVar NotifyState -> Notification -> IO ()
-renderActions tState noti =
+renderActions :: IO () -> TVar NotifyState -> Notification -> IO ()
+renderActions wake tState noti =
   forM_ (zip [0 :: Int ..] (actionPairs (notiActions noti))) $ \(i, (key, label)) -> do
     when (i > (0 :: Int)) Raw.sameLine
     clicked <- smallButton label
     when clicked $ do
       notiOnAction noti (notiActionCommands noti) (T.unpack key) Nothing
-      closeNotiById tState (notiId noti) User
+      closeNotiById wake tState (notiId noti) User
 
 actionPairs :: [T.Text] -> [(T.Text, T.Text)]
 actionPairs (k:v:rest) = (k, v) : actionPairs rest

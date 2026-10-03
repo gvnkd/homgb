@@ -176,6 +176,7 @@ xmlStrip config text = do
     else removeAllTags text
 
 notify :: Config
+       -> IO ()
        -> TVar NotifyState
        -> (Signal -> IO ())
        -> Text -- ^ Application name
@@ -187,7 +188,7 @@ notify :: Config
        -> Map.Map Text Variant -- ^ Hints
        -> Int32 -- ^ Expires timeout (milliseconds)
        -> IO Word32
-notify config tState emit'
+notify config wake tState emit'
   appName replaceId icon summary body actions hints timeout = do
   createdAt <- getCurrentTime
   time <- getTime
@@ -244,6 +245,7 @@ notify config tState emit'
                 newNoti
                 (fromIntegral (notiRepId newNoti))
           }
+  wake
 
   return $ fromIntegral $ notiId newNoti
     where
@@ -318,9 +320,11 @@ modifyNoti config noti =
 
 -- | Remove a notification everywhere (live list AND center history),
 -- invoke its onClosed with the given close type (emitting
--- NotificationClosed when configured).
-closeNotiById :: TVar NotifyState -> Int -> CloseType -> IO ()
-closeNotiById tState notiId' ctype = do
+-- NotificationClosed when configured). Runs on the dbus dispatcher
+-- thread (CloseNotification) or the render thread (popup clicks);
+-- either way the wake is a harmless extra user event.
+closeNotiById :: IO () -> TVar NotifyState -> Int -> CloseType -> IO ()
+closeNotiById wake tState notiId' ctype = do
   state <- readTVarIO tState
   let mNoti = find (\n -> notiId n == notiId') (notiStList state)
   case mNoti of
@@ -331,12 +335,13 @@ closeNotiById tState notiId' ctype = do
           , notiHistory = filter (\n -> notiId n /= notiId') (notiHistory s)
           }
       notiOnClosed noti ctype
+      wake
 
 -- | Popup timeout: drop the notification from the live list but KEEP
 -- it in the center history. onClosed still fires (deadd semantics:
 -- send-noti-closed config).
-expireNotiById :: TVar NotifyState -> Int -> CloseType -> IO ()
-expireNotiById tState notiId' ctype = do
+expireNotiById :: IO () -> TVar NotifyState -> Int -> CloseType -> IO ()
+expireNotiById wake tState notiId' ctype = do
   state <- readTVarIO tState
   let mNoti = find (\n -> notiId n == notiId') (notiStList state)
   case mNoti of
@@ -345,20 +350,23 @@ expireNotiById tState notiId' ctype = do
       atomically $ modifyTVar' tState $ \s ->
         s { notiStList = filter (\n -> notiId n /= notiId') (notiStList s) }
       notiOnClosed noti ctype
+      wake
 
 -- | Drop every notification (dismiss/clear-all).
-closeAllNotifications :: TVar NotifyState -> CloseType -> IO ()
-closeAllNotifications tState ctype = do
+closeAllNotifications :: IO () -> TVar NotifyState -> CloseType -> IO ()
+closeAllNotifications wake tState ctype = do
   state <- readTVarIO tState
   mapM_ (\n -> notiOnClosed n ctype) (notiStList state ++ notiHistory state)
   atomically $ modifyTVar' tState $ \s ->
     s { notiStList = [], notiHistory = [] }
+  wake
 
-closeNotification :: TVar NotifyState -> Word32 -> IO ()
-closeNotification tState wid = closeNotiById tState (fromIntegral wid) CloseByCall
+closeNotification :: IO () -> TVar NotifyState -> Word32 -> IO ()
+closeNotification wake tState wid =
+  closeNotiById wake tState (fromIntegral wid) CloseByCall
 
-notificationDaemon :: Config -> TVar NotifyState -> IO ()
-notificationDaemon config tState = do
+notificationDaemon :: Config -> IO () -> TVar NotifyState -> IO ()
+notificationDaemon config wake tState = do
   putStrLn "notificationDaemon started"
   hFlush stdout
   client <- connectSession
@@ -373,13 +381,13 @@ notificationDaemon config tState = do
     , interfaceMethods =
       [ autoMethod "GetServerInformation" getServerInformation
       , autoMethod "GetCapabilities" getCapabilities
-      , autoMethod "CloseNotification" (closeNotification tState)
-      , autoMethod "Notify" (notify config tState (emit client))
+      , autoMethod "CloseNotification" (closeNotification wake tState)
+      , autoMethod "Notify" (notify config wake tState (emit client))
       ]
     }
 
-startNotificationDaemon :: Config -> IO (TVar NotifyState)
-startNotificationDaemon config = do
+startNotificationDaemon :: Config -> IO () -> IO (TVar NotifyState)
+startNotificationDaemon config wake = do
   istate <- newTVarIO $ NotifyState [] [] 1 config
-  _ <- forkIO (notificationDaemon config istate)
+  _ <- forkIO (notificationDaemon config wake istate)
   return istate
