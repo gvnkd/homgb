@@ -226,6 +226,10 @@ pushWakeEvent userEv = do
     fillBytes ev 0 n
     poke (castPtr ev :: Ptr Word32) userEv
     void (pushEvent ev)
+
+-- | X11 window id of the SDL window (for EWMH tagging), if running on
+-- X11.
+x11WindowId :: Window -> IO (Maybe Word64)
 x11WindowId w = do
   props <- getWindowProperties w
   case props of
