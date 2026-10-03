@@ -36,7 +36,7 @@ import Graphics.X11.Xlib.Misc (queryPointer)
 import DBus.Client (Client)
 import DBus.Internal.Types (BusName(..), ObjectPath)
 
-import DearImGui hiding (begin)
+import DearImGui hiding (begin, x, y, w, size)
 import qualified DearImGui.Raw as Raw (begin, separator, getMousePos
                                        , setNextWindowPos, pushStyleColor
                                        , pushStyleVar, popStyleVar)
@@ -86,7 +86,7 @@ openItemMenu client menus info trayWinPos trayH screenSize =
       ImVec2 mx _ <- Raw.getMousePos
       now <- getPOSIXTime
       let (wx, wy) = trayWinPos
-          (sw, sh) = screenSize
+          (sw, _sh) = screenSize
           rx = min (max 0 (floor mx + wx)) (sw - 60)
           ry = wy + trayH + 2
           pos = ImVec2 (fromIntegral rx) (fromIntegral ry)

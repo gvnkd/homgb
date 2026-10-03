@@ -16,7 +16,7 @@ module Homgb.Tray.Menu.Tree
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Int (Int32)
-import DBus (Variant(..), Structure(..), fromVariant)
+import DBus (Variant, fromVariant)
 
 data LayoutNode = LayoutNode
   { lnId :: Int32

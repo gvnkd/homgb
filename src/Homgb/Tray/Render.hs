@@ -29,7 +29,7 @@ import DBus.Internal.Types (BusName(..))
 import qualified StatusNotifier.Item.Client as I
 import StatusNotifier.Host.Service (ItemInfo(..))
 
-import DearImGui hiding (image, begin)
+import DearImGui hiding (image, begin, w)
 import qualified DearImGui.Raw as Raw
   (imageButton, begin, setNextWindowPos, setNextWindowSize, pushStyleColor
   , pushStyleVar, popStyleVar, getMousePos)
@@ -54,10 +54,10 @@ type TrayTextures = TVar (Map.Map String (Int, Maybe GLuint))
 -- refresh the pending-tooltip state (the tooltip SURFACE picks it up
 -- after the hover delay; staleness via tiLastSeen).
 offerTooltip :: TrayEnv -> String -> [T.Text] -> (Int, Int) -> IO ()
-offerTooltip env key lines (wx, wy) = do
+offerTooltip env key tipLines (wx, wy) = do
   hovered <- isItemHovered
   now <- getPOSIXTime
-  when (hovered && not (null lines)) $ do
+  when (hovered && not (null tipLines)) $ do
     hk <- readTVarIO (trayHoverKey env)
     since <- case hk of
       Just (k, s) | k == key -> return s
@@ -68,10 +68,10 @@ offerTooltip env key lines (wx, wy) = do
     dbg <- lookupEnv "HOMGB_DEBUG"
     case dbg of
       Just _ -> hPutStrLn stderr $ "tooltip " ++ key ++ ": "
-        ++ show lines
+        ++ show tipLines
       Nothing -> return ()
     atomically $ writeTVar (trayTooltip env) (Just TooltipInfo
-      { tiLines = lines
+      { tiLines = tipLines
       , tiRootX = floor mx + wx
       , tiRootY = floor my + wy
       , tiSince = since
@@ -246,9 +246,6 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
   return (fromIntegral monW, btn + 2 * framePadY + 2 * thTrayPadY theme)
   where
     gap = fromIntegral (thTraySpacing theme)
-    withDpy f = case trayDisplay env of
-      Just dpy -> f dpy
-      Nothing -> return 0
     -- Section widths; the flags say whether each renders at all.
     -- Measure-only (no drawing): this runs before Begin. The title
     -- width is computed LAST: natural char-capped width clamped into
@@ -328,10 +325,13 @@ renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
 renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
           traySpacing sects spacerW surfSize winPos screenSize = do
-  let [wsOn, titleOn, winOn] = map (maybe False fst . atSec) [0, 1, 2]
-        where atSec i =
-                let ps = slLeft sects
-                in if i < length ps then Just (ps !! i) else Nothing
+  let secFlag i = maybe False fst (atSec i)
+      atSec i =
+        let ps = slLeft sects
+        in if i < length ps then Just (ps !! i) else Nothing
+      wsOn = secFlag 0
+      titleOn = secFlag 1
+      winOn = secFlag 2
   wsRendered <-
     if wsOn then case mBar of
       Just barT -> do
@@ -378,7 +378,7 @@ renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
   where
     withDpy f = case trayDisplay env of
       Just dpy -> f dpy
-      Nothing -> return 0
+      Nothing -> fail "homgb: no X display (trayDisplay)"
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
 -- Clicking rotates layouts, same as the hotkey. The label is drawn at

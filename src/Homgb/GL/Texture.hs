@@ -9,7 +9,7 @@ module Homgb.GL.Texture
   , drawImage
   ) where
 
-import Data.Int (Int32)
+
 import qualified Data.ByteString as BS
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (allocaArray, peekArray, pokeArray)
@@ -18,7 +18,7 @@ import Foreign.Storable (poke)
 import Graphics.GL hiding (glBindTexture)
 import qualified Graphics.GL as GL (glBindTexture)
 
-import DearImGui hiding (image, begin)
+import DearImGui hiding (image, begin, w)
 import qualified DearImGui.Raw as Raw (image)
 
 -- | Raw RGBA8 pixel data ready for GL upload.

@@ -69,7 +69,7 @@ import System.IO (hPutStrLn, stderr)
 
 import Homgb.WMProps (installErrorHandler)
 
-import DearImGui hiding (begin)
+import DearImGui hiding (begin, w)
 import qualified DearImGui.Raw as Raw (pushStyleColor)
 
 import Homgb.Config (Config(..))

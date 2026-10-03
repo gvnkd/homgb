@@ -19,8 +19,9 @@ import System.IO (hClose)
 import System.Process (createProcess, proc, std_out, StdStream(..), waitForProcess)
 
 import Codec.Picture
-import Codec.Picture.Types (DynamicImage(..), imageWidth, imageHeight
-                           , promoteImage)
+import Codec.Picture.Types (promoteImage)
+
+
 
 import StatusNotifier.Host.Service (ItemInfo(..))
 

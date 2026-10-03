@@ -33,7 +33,6 @@ import Foreign.C.Types (CFloat(..), CInt(..))
 import Foreign.Ptr (Ptr, nullPtr)
 import System.Directory (doesFileExist, findExecutable)
 import System.Process (readCreateProcess, proc)
-import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 import Control.Exception (IOException, catch)
 
@@ -185,7 +184,7 @@ fcCandidates family = do
   where
     trimLines = map trim . filter (not . null) . lines
     trim = dropWhileEnd' isSpace' . dropWhile isSpace'
-    dropWhileEnd' p = foldr (\x xs -> if p x && null xs then [] else x : xs) []
+    dropWhileEnd' p = foldr (\c cs -> if p c && null cs then [] else c : cs) []
     isSpace' c = c == ' ' || c == '\n' || c == '\t'
 
 -- | Stb/ImGui can only rasterize TrueType-outline fonts: reject CFF
@@ -211,6 +210,7 @@ loadableFontFile path = inspect `catch` (\(_ :: IOException) -> return False)
       -- variation tables and rasterizes the default instance
       -- (NotoSans.ttf is variable and loads perfectly). Unparseable
       -- fonts return NULL thanks to -DNDEBUG (no IM_ASSERT abort).
+    be16 :: BS.ByteString -> Int
     be16 b = fromIntegral (BS.index b 0) * 256 + fromIntegral (BS.index b 1)
 -- | Merge the first loadable candidate of a fallback family into the
 -- primary font; glyphs the primary lacks resolve through it. Returns
@@ -239,17 +239,17 @@ parseHexColor t0 = do
   let t = T.dropWhile (== '#') t0
   if T.length t /= 6 && T.length t /= 8 then Nothing else do
     let ds = map hexVal (T.unpack t)
-    if any (== -1) ds then Nothing else
-      let [r, g, b, a] = case ds of
-            [r1, r2, g1, g2, b1, b2] ->
-              [pair r1 r2, pair g1 g2, pair b1 b2, 255]
-            [r1, r2, g1, g2, b1, b2, a1, a2] ->
-              [pair r1 r2, pair g1 g2, pair b1 b2, pair a1 a2]
-            _ -> [0, 0, 0, 255]
-      in Just (ImVec4 (r / 255) (g / 255) (b / 255) (a / 255))
+    if any (== -1) ds then Nothing
+    else case ds of
+      [r1, r2, g1, g2, b1, b2] ->
+        Just (mkVec (pair r1 r2) (pair g1 g2) (pair b1 b2) 255)
+      [r1, r2, g1, g2, b1, b2, a1, a2] ->
+        Just (mkVec (pair r1 r2) (pair g1 g2) (pair b1 b2) (pair a1 a2))
+      _ -> Nothing -- unreachable: the length is checked above
   where
     hexVal c = if isHexDigit c then fromIntegral (digitToInt c) else -1
     pair a b = a * 16 + b
+    mkVec r g b a = ImVec4 (r / 255) (g / 255) (b / 255) (a / 255)
 
 foreign import ccall "homgb_add_font" c_add_font
   :: CString -> CFloat -> CInt -> IO (Ptr ())

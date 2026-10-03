@@ -76,8 +76,8 @@ sendClicked client name path itemId timestamp = void $
 registerLayoutUpdated :: Client -> BusName -> ObjectPath
                       -> ((Word32, Int32) -> IO ()) -> IO SignalHandler
 registerLayoutUpdated client name path handler =
-  addMatch client rule $ \signal ->
-    case signalBody signal of
+  addMatch client rule $ \sig ->
+    case signalBody sig of
       (revision:parent:_) ->
         case (fromVariant revision, fromVariant parent) of
           (Just r, Just p) -> handler (r, p)

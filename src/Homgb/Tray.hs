@@ -19,7 +19,6 @@ import qualified Data.Text as T
 import Graphics.GL (GLuint)
 import Graphics.X11.Xlib (Display)
 import Graphics.X11.Xlib.Display (openDisplay)
-import Graphics.X11.Xlib.Misc (queryPointer)
 import System.IO (hPutStrLn, stderr)
 
 import DBus.Client (Client, connectSession)

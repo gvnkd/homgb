@@ -30,7 +30,7 @@ module Homgb.SDL3
 import Control.Monad (unless, when)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
-import Data.Word (Word8, Word32, Word64)
+import Data.Word (Word32, Word64)
 import DearImGui (Context)
 import qualified DearImGui.Raw as Raw (setCurrentContext)
 import Foreign.C.ConstPtr (ConstPtr(..))
@@ -39,10 +39,8 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, peekByteOff)
 import Linear (V2(..))
-import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, stderr)
-import System.IO (hPutStrLn, stderr)
+
 
 import Prelude hiding (init)
 
@@ -52,7 +50,6 @@ import SDL3.Sys.Events
   , SDL_EventType
   , pollEvent
   , pattern SDL_EVENT_QUIT
-  , pattern SDL_EVENT_MOUSE_MOTION
   )
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
 import SDL3.Sys.Properties (SDL_PropertiesID(..), getNumberProperty)

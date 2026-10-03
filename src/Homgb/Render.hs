@@ -28,18 +28,17 @@ import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import Graphics.X11.Xlib (Display)
 import Graphics.X11.Xlib.Display (defaultRootWindow)
 import Graphics.X11.Xlib.Misc (queryPointer)
 
 import System.IO (hPutStrLn, hFlush, stderr)
 import System.Environment (lookupEnv)
 
-import DearImGui hiding (image, begin)
+import DearImGui hiding (image, begin, x, y, w)
 import qualified DearImGui.Raw as Raw
   (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
-  , setNextWindowSize, showMetricsWindow, separator, beginChild, endChild
-  , getMousePos, pushStyleVar)
+  , setNextWindowSize, showMetricsWindow, separator
+  , pushStyleVar)
 
 import Homgb.Bar (refreshBar)
 import Homgb.Config (Config(..))
@@ -48,7 +47,6 @@ import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
 import Homgb.Notifications.Daemon
   (NotifyState(..), closeAllNotifications, closeNotiById, expireNotiById)
 import Homgb.Notifications.Data
-import Homgb.SDL3 (Window)
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
@@ -91,10 +89,10 @@ frameUpkeep app = do
   -- (X event listener thread) sets appBarDirty; we re-read only then,
   -- plus a slow 5s safety re-sync (covers what root selection cannot
   -- see, e.g. client _NET_WM_NAME changes).
-  now <- getPOSIXTime
+  nowTick <- getPOSIXTime
   lastStack <- readTVarIO (appStackTick app)
-  when (now - lastStack > 0.2) $ do
-    atomically $ writeTVar (appStackTick app) now
+  when (nowTick - lastStack > 0.2) $ do
+    atomically $ writeTVar (appStackTick app) nowTick
     forM_ (trayDisplay (appTray app)) $ \dpy -> do
       let surfs = appSurfaces app
       reassertStacking dpy (surfacesTray surfs)
@@ -102,9 +100,9 @@ frameUpkeep app = do
       reassertStacking dpy (surfacesTooltip surfs)
     dirty <- readTVarIO (appBarDirty app)
     lastBar <- readTVarIO (appBarTick app)
-    when (dirty || now - lastBar > 5) $ do
+    when (dirty || nowTick - lastBar > 5) $ do
       atomically $ do
-        writeTVar (appBarTick app) now
+        writeTVar (appBarTick app) nowTick
         writeTVar (appBarDirty app) False
       forM_ (trayDisplay (appTray app)) $ \dpy -> do
         mStrut <- readTVarIO (appStrut app)
@@ -320,7 +318,8 @@ drawTooltipSurface app = do
       let maxLine = maximum (0 : lineWs)
           winW = min 420 (maxLine + 2 * thTrayPadX theme)
           availW = max 1 (winW - 2 * thTrayPadX theme)
-          wraps = sum [ max 1 (ceiling (w / availW)) | w <- lineWs ]
+          wraps :: Int
+          wraps = sum [ max 1 (ceiling (w / availW) :: Int) | w <- lineWs ]
           contentH = fromIntegral wraps * lineH
             + fromIntegral (length lines' - 1) * (lineH / 2)
             + 2 * thTrayPadY theme

@@ -9,10 +9,9 @@ import Control.Monad.IO.Class
 import Control.Monad.Managed
 import Data.Word (Word32)
 import qualified Data.Text.IO as T
-import DearImGui
+import DearImGui hiding (w)
 import DearImGui.OpenGL3
 import qualified DearImGui.Raw as Raw (Context, setCurrentContext)
-import Foreign.Ptr (castPtr)
 import Graphics.GL
 import Linear (V2(..))
 
@@ -23,14 +22,12 @@ import System.FilePath ((</>))
 import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
 import Homgb.Bar (barCovered, startBarEvents)
-import Homgb.ImGui.SDL3 (initForOpenGL, shutdown)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (startKeyboard)
 import qualified Homgb.Keyboard.Xcb as Xcb
 import Homgb.Monitors (fallbackMonitor, getMonitors)
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Render
-import Homgb.SDL3 (GLContext)
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
@@ -71,7 +68,9 @@ run = do
     Raw.setCurrentContext (sContext s)
     f <- applyFont theme
     return s { sMainFont = f }
-  let [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf] = surfs
+  (traySurf, popSurf, centerSurf, menuSurf, tooltipSurf) <- case surfs of
+    [t, p, c, m, tt] -> return (t, p, c, m, tt)
+    _ -> error "homgb: internal: expected 5 surfaces"
   -- EWMH tags must be set BEFORE the windows map
   forM_ (trayDisplay tray) $ \dpy -> do
     tagSurface dpy traySurf WmDock
