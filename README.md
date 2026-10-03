@@ -176,6 +176,13 @@ Notes:
   the strip is free again.
 - Workspace buttons show whatever `_NET_DESKTOP_NAMES` says; no
   xmonad.hs changes needed for renaming/reordering.
+- **Tray icons and app launch order**: an SNI tray icon only exists
+  if the app registers with the watcher, and many apps (Electron
+  clients like Zulip/Mattermost, Telegram) only try at launch. Apps
+  started before homgb stay invisible until restarted — the autostart
+  order above (homgb first) prevents this. homgb shows every item
+  that registers; `HOMGB_DEBUG=1` logs the full registered list per
+  frame (`tray items: [...]`) when diagnosing.
 
 ## Architecture
 

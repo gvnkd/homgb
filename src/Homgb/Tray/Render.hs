@@ -60,8 +60,8 @@ keepItem config item =
 
 -- | HOMGB_DEBUG: list registered items and which are hidden, so
 -- "where did my app go" is answerable from the log.
-dbgPassive :: Config -> TrayState -> [TrayItem] -> IO ()
-dbgPassive config state visible = do
+dbgPassive :: TrayState -> [TrayItem] -> IO ()
+dbgPassive state visible = do
   dbg <- lookupEnv "HOMGB_DEBUG"
   case dbg of
     Just _ -> hPutStrLn stderr $ "tray items: "
@@ -129,7 +129,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
               , let t = iconTitle (tiInfo i) ]
     Nothing -> return ()
   let items = filter (keepItem config) (trayItems state)
-  dbgPassive config state items
+  dbgPassive state items
   let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
@@ -216,7 +216,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               winPos screenSize@(monW, _) = do
   state <- readTVarIO (trayState env)
   let items = filter (keepItem config) (trayItems state)
-  dbgPassive config state items
+  dbgPassive state items
   let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
