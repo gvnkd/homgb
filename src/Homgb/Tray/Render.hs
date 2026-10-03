@@ -32,7 +32,7 @@ import StatusNotifier.Host.Service (ItemInfo(..))
 import DearImGui hiding (image, begin, w)
 import qualified DearImGui.Raw as Raw
   (imageButton, begin, setNextWindowPos, setNextWindowSize, pushStyleColor
-  , pushStyleVar, popStyleVar, getMousePos, dummy)
+  , pushStyleVar, popStyleVar, getMousePos, dummy, setCursorPos)
 import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
   ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
@@ -281,7 +281,6 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
   let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
-      contentH = btn + 2 * framePadY + 2 * thTrayPadY theme
       -- no AlwaysAutoResize here: the window must span the whole
       -- surface or the spacer-pushed right widgets clip at the
       -- viewport edge (auto-resize only measures direct content)
@@ -299,15 +298,11 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
   -- whatever space remains after the fixed sections — a long title
   -- eats the spacer region before truncating.
   sects <- measureSections items (length embeds) btn traySpacing
-  let leftW = sectionSum (slLeft sects)
-      rightW = sectionSum (slRight sects)
-      spacerW = max 0 (fromIntegral monW - 2 * thTrayPadX theme
-                       - leftW - rightW - slGaps sects)
   dbg <- lookupEnv "HOMGB_DEBUG"
   case dbg of
     Just _ -> hPutStrLn stderr $ "bar sections: left="
       ++ show (map snd (slLeft sects)) ++ " right="
-      ++ show (map snd (slRight sects)) ++ " spacer=" ++ show spacerW
+      ++ show (map snd (slRight sects)) ++ " rightX=" ++ show (slRightX sects)
     Nothing -> return ()
   let ImVec2 _surfW surfH = surfSize
   _ <- withImVec4 (thBarBg theme) $ \bgPtr ->
@@ -330,17 +325,16 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
           $ \label -> Raw.begin label Nothing (Just trayFlags)
         when beginVisible $
           renderRow env textures config theme kbEnv mainFont mBar items
-            embeds iconSize btn traySpacing sects spacerW surfSize winPos screenSize
+            embeds iconSize btn traySpacing sects surfSize winPos screenSize
         end
         Raw.popStyleVar 2
         popStyleColor 2
-  -- move XEmbed icon slots to their right-group positions. The
-  -- sections render with `gap` between them, so the group's left edge
-  -- is monW - pad - (widths + gaps); forgetting the gaps shifted the
-  -- embeds right, leaving a hole after the SNI icons and colliding
-  -- the last one with the keyboard indicator.
-  let rightX0 = fromIntegral monW - thTrayPadX theme
-        - sectionSum (slRight sects) - slRightGaps sects
+  -- move XEmbed icon slots to their right-group positions. The SNI
+  -- icons are drawn at the same anchor ('slRightX'), computed once in
+  -- measureSections — a single source of truth for the group's left
+  -- edge (widths + inter-section gaps), so ImGui-drawn widgets and
+  -- foreign X windows can never drift apart.
+  let rightX0 = slRightX sects
       itemW = btn + 2 * framePadX
       slotPos :: Int -> (Int, Int, Int)
       slotPos i =
@@ -389,36 +383,26 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       let hasWs = wsW > 0
           hasTitle = titleNatural > 0
           hasWin = winW > 0
-          leftFlags = [hasWs, hasTitle, hasWin]
           rightFlags = [iconsW > 0, kbW > 0, clockW > 0, dateW > 0]
-          leftN = length (filter id leftFlags)
           rightN = length (filter id rightFlags)
-          leftGaps = 0
-            -- left sections abut via separators (widths included in
-            -- the section sums), not traySpacing gaps
           rightGaps = fromIntegral (max 0 (rightN - 1))
-          spacerGaps = if leftN > 0 && rightN > 0 then 2
-                       else if leftN + rightN > 0 then 1 else 0
           -- separators between the left sections themselves
           crossSeps = (if hasWs && hasTitle then 1 else 0)
-            + (if (hasWs || hasTitle) && hasWin then 1 else 0)
+            + (if (hasWs || hasTitle) && hasWin then 1 else 0) :: Int
           crossSepW = fromIntegral crossSeps * sw
           fixedLeft = wsW + winW + crossSepW
           rightTotal = iconsW + kbW + clockW + dateW + rightGaps * gap
-          titleAvail = fromIntegral monW - 2 * thTrayPadX theme
-            - fixedLeft - rightTotal - (leftGaps + spacerGaps) * gap
+          -- the right group's left edge, anchored to the right pad;
+          -- the ONLY placement authority — renderRow draws the group
+          -- at exactly this x and the XEmbed slots use it too
+          rightX = fromIntegral monW - thTrayPadX theme - rightTotal
+          titleAvail = rightX - thTrayPadX theme - fixedLeft
           titleW = min titleNatural (max 0 titleAvail)
           left = filter fst [ (wsW > 0, wsW), (hasTitle, titleW)
                             , (winW > 0, winW) ]
           right = filter fst [ (iconsW > 0, iconsW), (kbW > 0, kbW)
                              , (dateW > 0, dateW), (clockW > 0, clockW) ]
-          gaps = gap * (leftGaps + rightGaps + spacerGaps)
-      -- the embed anchor: the right group's left edge sits spacerGaps
-      -- * gap left of monW - pad - right widths (the spacer reserves
-      -- that breathing room), so the slots must account for it
-      return (SectionLayout left right gaps titleW
-               (gap * (rightGaps + spacerGaps)))
-    sectionSum ps = sum (map snd ps)
+      return (SectionLayout left right titleW rightX)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
         s <- readTVarIO (kbState kb)
@@ -428,27 +412,36 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
           return (tw + 2 * framePadX)
       _ -> return 0
 
--- Pre-measured section widths for one bar row.
+-- Pre-measured section widths for one bar row. `slRightX` is the
+-- single placement authority for the right group (icons, indicator,
+-- date, clock): renderRow draws the group at exactly that x and the
+-- XEmbed slot math reads it too — the ImGui widgets and the foreign
+-- X windows therefore cannot drift apart.
 data SectionLayout = SectionLayout
   { slLeft :: [(Bool, Float)]
+    -- ^ on/off flags + widths of the left sections (ws, title,
+    --   windows) — title width is the clamped budget, not the
+    --   rendered advance
   , slRight :: [(Bool, Float)]
-  , slGaps :: Float
   , slTitleW :: Float
-  , slRightGaps :: Float
-    -- ^ total spacing between the right-group sections (for embed
-    --   slot positioning)
+  , slRightX :: Float
+    -- ^ absolute window-local x of the right group's left edge
   }
 
--- | Render one bar row: left sections, h-spacer, right group. The
--- section list mirrors 'measureSections' (ws, title, windows | icons,
--- indicator, date, clock).
+-- | Render one bar row: left sections flow from the left edge, then
+-- the right group is JUMPED to its measured anchor ('slRightX') — no
+-- spacer. A spacer's width is derived from the measured sections, but
+-- the cursor it consumes follows the sections' ACTUAL advances (which
+-- drift: the ellipsis-fitted title renders narrower than its budget,
+-- text metrics vary), so anything right of the spacer shifted with
+-- the title while the analytically-placed XEmbed icons stood still.
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
           -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
           -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
-          -> SectionLayout -> Float
+          -> SectionLayout
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
 renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize btn
-          traySpacing sects spacerW surfSize winPos screenSize = do
+          traySpacing sects surfSize winPos screenSize = do
   let secFlag i = maybe False fst (atSec i)
       atSec i =
         let ps = slLeft sects
@@ -476,7 +469,7 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
               sameLineS 0
               renderSep theme rowH
               sameLineS 0
-            ImVec2 tw th <- calcTextSize fitted True 0
+            ImVec2 _ th <- calcTextSize fitted True 0
             centerCursorY theme rowH th
             text fitted
             return True
@@ -491,9 +484,11 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
         return True
       Nothing -> return False
     else return False
-  -- the h-spacer: pushes the right group to the right edge
-  when (wsRendered || titleRendered || winRendered) $
-    sameLineS spacerW
+  -- the right group is JUMPED to its measured anchor (see the
+  -- 'SectionLayout' haddock): absolute positioning, independent of
+  -- how wide the left sections actually rendered
+  withImVec2 (ImVec2 (slRightX sects) (thTrayPadY theme)) $ \p ->
+    Raw.setCursorPos p
   let n = length items + length embeds
   forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
     when (idx > 0) $ sameLineS traySpacing
