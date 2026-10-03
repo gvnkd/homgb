@@ -53,7 +53,7 @@ import SDL3.Sys.Events
   ( SDL_Event
   , SDL_EventType(..)
   , pollEvent
-  , waitEventTimeout
+  , waitEventTimeoutSafe
   , pushEvent
   , registerEvents
   , pattern SDL_EVENT_QUIT
@@ -184,7 +184,11 @@ pumpEvents routes = alloca @SDL_Event $ \ev -> drain ev False
 -- routed to an ImGui context.
 pumpEventsTimeout :: Word32 -> [(Word32, Context)] -> Int -> IO (Bool, Bool)
 pumpEventsTimeout userEv routes ms = alloca @SDL_Event $ \ev -> do
-  got <- waitEventTimeout ev (i32 (max 0 (min ms maxBoundInt32)))
+  -- the SAFE flavor: the unsafe FFI would freeze the capability for
+  -- the whole wait and starve dbus-haskell's reply dispatch (SNI
+  -- property fetches then hit their 5s timeout — observed as
+  -- serial-0 Error.Failed from the host library)
+  got <- waitEventTimeoutSafe ev (i32 (max 0 (min ms maxBoundInt32)))
   if not got
     then return (False, False)
     else go ev False True

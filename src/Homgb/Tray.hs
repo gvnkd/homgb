@@ -15,7 +15,7 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
 import Control.Monad (filterM, forM_, unless, void, when)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, sort)
 import qualified Data.Map.Strict as Map
 import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Data.Text as T
@@ -167,20 +167,36 @@ runHost wake tState client = go (10 :: Int)
           -- restarts, when clients re-register within milliseconds —
           -- exposed when font resolution made startup fast). The
           -- map fills without firing ItemAdded to update handlers,
-          -- so the tray stays empty. Watchdog: if the watcher knows
-          -- more items than our tray a few seconds in, rebuild once
-          -- (a fresh build replays the full item map).
+          -- so the tray stays empty. Watchdog: if the watcher's
+          -- registered-name SET differs from our tray's a few
+          -- seconds in, replay each registered name through the
+          -- host's forceUpdate (a fresh item fetch; already-tracked
+          -- names are ignored by the library). Never rebuild here:
+          -- a second SHost.build would request the host name we
+          -- already own → NameAlreadyOwner spam and no new host.
+          -- Counts are deliberately not compared: a reaped zombie
+          -- stays in the watcher's list forever, so count drift is
+          -- not proof of a missed item.
           when (n > 1) $ void $ forkIO $ do
             threadDelay 3000000
             mRegistered <- (Just <$> Watcher.getRegisteredStatusNotifierItems client)
               `catch` (\(_ :: IOException) -> return Nothing)
             s <- readTVarIO tState
+            -- the watcher lists items as "busName" or
+            -- "uniqueName/object/path" (clients may register by object
+            -- path); compare and replay the parsed bus name
+            let registeredNames = sort
+                  [ takeWhile (/= '/') nm
+                  | Just (Right ns) <- [mRegistered], nm <- ns ]
+                trayNames = sort
+                  [ nm | i <- trayItems s
+                      , let BusName nm = itemServiceName (tiInfo i) ]
             case mRegistered of
               Just (Right registered)
-                | length registered > length (trayItems s) -> do
+                | registeredNames /= trayNames -> do
                     hPutStrLn stderr
-                      "tray: SNI host missed registered items, rebuilding"
-                    go (n - 1)
+                      "tray: SNI host out of sync with watcher, replaying item map"
+                    mapM_ (SHost.forceUpdate host . BusName) registered
               _ -> return ()
   -- the dbus client keeps its own dispatcher thread alive; signal
   -- callbacks (our updateHandler) run there, so this thread may exit

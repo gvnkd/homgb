@@ -219,6 +219,31 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   homgb_ensure_sticky already read-compares (only writes on drift).
   Verified 2026-10-03: idle 0.0% CPU (was ~100%), popup Notify →
   viewable, 5s expiry → unmapped.
+- CRITICAL (cost a debugging session): SDL_WaitEventTimeout's UNSAFE
+  FFI flavor (sdl3-bindgen exports both) blocks the whole GHC
+  capability for the entire wait — dbus-haskell's reply dispatch then
+  never runs and every blocking dbus `call` hits its 5s timeout
+  (status-notifier-item reports it as a serial-0
+  Error.Failed MethodError; SNI item fetches fail, reapZombieItems
+  times out NameHasOwner → live items judged dead → "reaped N zombie
+  item(s)"). Symptom looked like a wedged dbus peer but bus-monitor
+  showed replies flowing. Homgb.SDL3 uses waitEventTimeoutSafe.
+  Repro recipe: build SHost.build while a thread loops
+  pumpEventsTimeout 250ms → ITEMS=0; without the loop → ITEMS=1.
+- SNI watchdog (Tray.runHost): never rebuild the host on watchdog
+  triggers — a second SHost.build requests
+  org.kde.StatusNotifierHost-homgb which the SAME process still owns
+  → NameAlreadyOwner retry spam, "failed to start SNI host". Instead
+  compare the watcher's registered-name SET (parsed with
+  splitServiceName semantics: break at the first '/'; entries can be
+  "uniqueName/object/path" — blueman registers by object path) against
+  the tray's item names and replay missing ones via SHost.forceUpdate
+  (the library dedups already-tracked names). Watchdog false
+  positives are normal: the watcher persists registrations to
+  ~/.cache/status-notifier-item/*.json and restores them, and
+  blueman-tray RESPAWNS with a new unique name on every homgb restart
+  (old name → ItemRemoved → reap → set mismatch → replay adds the new
+  name). All of that is expected noise, not a fault.
 - SNI tooltips: own surface (homgb-tooltip, EWMH TOOLTIP, created
   LAST = topmost float) — in-window tooltips clip against the bar's
   54px viewport. offerTooltip (Tray/Render) writes trayTooltip TVar

@@ -82,3 +82,4 @@ executable homgb
   -- threads coexisting with the SDL render loop (see architecture notes
   -- in .opencode/MEMORIES.md); without this they freeze the whole RTS.
   ghc-options:         -Wall -O2 -threaded
+
