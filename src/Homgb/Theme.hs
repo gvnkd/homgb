@@ -20,9 +20,11 @@ module Homgb.Theme
   , parseHexColor
   ) where
 
+import Control.Exception (IOException, catch)
 import Control.Monad (filterM, forM_, when)
 import Data.Char (isHexDigit, digitToInt)
 import qualified Data.ByteString as BS
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -32,9 +34,9 @@ import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CFloat(..), CInt(..))
 import Foreign.Ptr (Ptr, nullPtr)
 import System.Directory (doesFileExist, findExecutable)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Process (readCreateProcess, proc)
 import System.IO (hPutStrLn, stderr)
-import Control.Exception (IOException, catch)
 
 import DearImGui (ImVec4(..))
 import Homgb.Config (Config(..), ThemeConfig(..))
@@ -166,24 +168,74 @@ resolveFont family sizePx cyrillic = do
       return (listToMaybe cands)
   return (fmap (\p -> FontSpec p sizePx cyrillic) mPath)
 
--- | All candidate files for a fontconfig family/pattern, best match
--- first (fc-match -a). More than one exists when families overlap
--- (e.g. "Noto Emoji" matches both the color-bitmap and the
--- monochrome-outline variants — only the latter loads in ImGui's
--- stb_truetype).
+-- | All candidate files for a fontconfig family. Served from a
+-- memoized one-shot `fc-list` font database: on font-heavy systems
+-- (google-fonts etc.) a single fontconfig pass over a cold cache
+-- takes tens of seconds and must NEVER be repeated (measured: ~60K
+-- syscalls per lookup, and homgb resolves 1+n-fallbacks per surface
+-- context). Exact family name matches only; if none, ask fc-match
+-- for its single best match (rare path).
 fcCandidates :: Text -> IO [FilePath]
 fcCandidates family = do
+  db <- fontDb
+  let exact = [ f | (fam, f) <- db, fam == T.toLower family ]
+  cands <-
+    if null exact
+      then fcMatchBest family
+      else return (nub exact)
+  filterM loadableFontFile cands
+
+-- | Memoized (lower-cased family, file) pairs from ONE fc-list pass.
+fontDb :: IO [(Text, FilePath)]
+fontDb = do
+  cached <- readIORef fontDbRef
+  case cached of
+    Just db -> return db
+    Nothing -> do
+      db <- query
+      writeIORef fontDbRef (Just db)
+      return db
+  where
+    query = do
+      mFc <- findExecutable "fc-list"
+      case mFc of
+        Nothing -> return []
+        Just fc -> do
+          out <- readCreateProcess
+            (proc fc ["-f", "%{file}\t%{family}\n"]) ""
+            `catch` (\(_ :: IOException) -> return "")
+          return
+            [ (T.toLower (T.dropWhile (== ' ') fam), path)
+            | l <- lines out
+            , (path, fams) <- [splitTab l]
+            , not (null path)
+            , fam <- splitComma (T.pack fams)
+            ]
+    splitTab l = case break (== '\t') l of
+      (p, _ : rest) -> (p, rest)
+      _ -> ("", "")
+    splitComma t = case T.break (== ',') t of
+      (a, _) | T.null a -> []
+      (a, rest) -> a : if T.null rest then []
+                       else splitComma (T.drop 1 rest)
+
+{-# NOINLINE fontDbRef #-}
+fontDbRef :: IORef (Maybe [(Text, FilePath)])
+fontDbRef = unsafePerformIO (newIORef Nothing)
+
+-- | The single best-matching file for a family/pattern (only used
+-- when the font database has no exact family match).
+fcMatchBest :: Text -> IO [FilePath]
+fcMatchBest family = do
   mFc <- findExecutable "fc-match"
   case mFc of
     Nothing -> return []
     Just fc -> do
       out <- readCreateProcess
-        (proc fc ["-a", "-f", "%{file}\n", T.unpack family]) ""
-      let paths = nub (trimLines out)
-      filterM loadableFontFile paths
+        (proc fc ["-f", "%{file}", T.unpack family]) ""
+      let path = dropWhileEnd' isSpace' (dropWhile isSpace' out)
+      return (if null path then [] else [path])
   where
-    trimLines = map trim . filter (not . null) . lines
-    trim = dropWhileEnd' isSpace' . dropWhile isSpace'
     dropWhileEnd' p = foldr (\c cs -> if p c && null cs then [] else c : cs) []
     isSpace' c = c == ' ' || c == '\n' || c == '\t'
 

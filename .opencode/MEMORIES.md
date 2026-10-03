@@ -47,6 +47,27 @@
   nix/overlay.nix) ]; }` — overlay files are PLAIN `self: super:` /
   `final: prev:` functions; a `{ }:` prefix arg breaks composition
   with infinite recursion.
+- Startup CPU/font pathology (laptop repro, strace): never shell out
+  to fontconfig per lookup — with a cold cache EACH fc-match pass
+  re-opens every font file (60K+ syscalls with google-fonts), and
+  homgb did 1+n-fallbacks per surface = minutes of 100% CPU with no
+  UI. Theme.fontDb memoizes ONE `fc-list -f "%{file}\t%{family}"`
+  pass per process; family matching is pure Haskell after that
+  (fc-match only as a no-exact-match fallback). mkTheme went from
+  minutes to ~50ms. Killing test instances: `pkill -x homgb` does
+  NOT match nix-built binaries — their argv[0] is `.homgb-wrapped`;
+  use `pkill -f homgb` carefully or check `busctl --user list` for
+  stray owners of org.freedesktop.Notifications /
+  org.kde.StatusNotifierHost-homgb (a squatter leaves every new
+  instance in NameInQueue with an empty tray).
+- SNI host startup race (status-notifier-item lib): items that
+  re-register between the watcher name appearing and the host's
+  initial item-map fetch land in the map WITHOUT ItemAdded reaching
+  update handlers — the tray silently stays empty (worse right after
+  homgb restarts; exposed when startup became fast). Tray.runHost
+  watchdog: 3s after a successful build, if the watcher's
+  RegisteredStatusNotifierItems outnumber our tray items, rebuild
+  the host (a fresh build replays the full map).
 
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
 SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.

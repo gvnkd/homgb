@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Homgb.Tray
   ( TrayItem(..)
@@ -12,7 +13,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void, when)
 import qualified Data.Map.Strict as Map
 import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Data.Text as T
@@ -24,6 +25,7 @@ import System.IO (hPutStrLn, stderr)
 import DBus.Client (Client, connectSession)
 import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
+import qualified StatusNotifier.Watcher.Client as Watcher
 
 import Homgb.Tray.Menu.Render (Menus, newMenus)
 import Homgb.WMProps (installErrorHandler)
@@ -109,7 +111,27 @@ runHost tState client = go (10 :: Int)
         Just host -> do
           _ <- SHost.addUpdateHandler host (updateHandler tState)
           hPutStrLn stderr "tray: SNI host started"
-          return ()
+          -- The host can silently miss items that re-registered in
+          -- the window between the watcher name appearing and the
+          -- host's initial item-map fetch (worst right after homgb
+          -- restarts, when clients re-register within milliseconds —
+          -- exposed when font resolution made startup fast). The
+          -- map fills without firing ItemAdded to update handlers,
+          -- so the tray stays empty. Watchdog: if the watcher knows
+          -- more items than our tray a few seconds in, rebuild once
+          -- (a fresh build replays the full item map).
+          when (n > 1) $ void $ forkIO $ do
+            threadDelay 3000000
+            mRegistered <- (Just <$> Watcher.getRegisteredStatusNotifierItems client)
+              `catch` (\(_ :: IOException) -> return Nothing)
+            s <- readTVarIO tState
+            case mRegistered of
+              Just (Right registered)
+                | length registered > length (trayItems s) -> do
+                    hPutStrLn stderr
+                      "tray: SNI host missed registered items, rebuilding"
+                    go (n - 1)
+              _ -> return ()
   -- the dbus client keeps its own dispatcher thread alive; signal
   -- callbacks (our updateHandler) run there, so this thread may exit
 
