@@ -9,6 +9,8 @@ module Homgb.Keyboard.Xcb
   , connect
   , group
   , lockGroup
+  , selectStateEvents
+  , awaitGroup
   , rulesLayouts
   , argbVisuals
   , screenSize
@@ -33,6 +35,13 @@ foreign import ccall "homgb_xcb_disconnect" c_disconnect :: ConnPtr -> IO ()
 foreign import ccall "homgb_xkb_supported" c_supported :: ConnPtr -> IO CInt
 foreign import ccall "homgb_xkb_get_group" c_get_group :: ConnPtr -> IO CInt
 foreign import ccall "homgb_xkb_lock_group" c_lock_group :: ConnPtr -> CUChar -> IO CInt
+foreign import ccall "homgb_xkb_select_state_events" c_select_state
+  :: ConnPtr -> IO CInt
+-- SAFE: blocks in xcb_wait_for_event until the next XKB state
+-- notification (an unsafe import would pin its RTS capability for
+-- the whole wait — the SDL unsafe-FFI lesson).
+foreign import ccall safe "homgb_xkb_await_group" c_await_group
+  :: ConnPtr -> IO CInt
 foreign import ccall "homgb_xkb_rules_layouts" c_rules :: ConnPtr -> IO CString
 foreign import ccall "homgb_argb_visuals" c_argb_visuals
   :: ConnPtr -> Ptr CInt -> IO (Ptr Word64)
@@ -63,6 +72,19 @@ lockGroup :: ConnPtr -> Int -> IO Bool
 lockGroup p g = do
   rc <- c_lock_group p (CUChar (fromIntegral g))
   return (rc == 0)
+
+-- | Subscribe to XKB state-notify events on this connection.
+selectStateEvents :: ConnPtr -> IO Bool
+selectStateEvents p = do
+  rc <- c_select_state p
+  return (rc == 0)
+
+-- | Block until the next XKB state-notify event; returns the new
+-- effective group. Nothing when the connection dies.
+awaitGroup :: ConnPtr -> IO (Maybe Int)
+awaitGroup p = do
+  g <- c_await_group p
+  return $ if g < 0 then Nothing else Just (fromIntegral g)
 
 -- | Layout rotation list from the root @\_XKB_RULES_NAMES@ property
 -- (the comma-separated "layout" field, e.g. @["us","ru"]@).

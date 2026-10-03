@@ -8,9 +8,13 @@
 -- and calls the DBus control interface (Homgb.Control), e.g.
 -- `busctl --user call org.homgb /org/homgb/Control org.homgb.Control
 -- NextLayout` - which also works on Wayland, where XGrabKey cannot
--- see other apps' input. The render loop polls the group (cheap xcb
--- request, rate-limited to 1/s) so switches made outside homgb still
--- show up in the tray indicator.
+-- see other apps' input. Group changes arrive event-driven via
+-- XCB_XKB_STATE_NOTIFY on a dedicated connection (a thread blocks in
+-- xcb_wait_for_event until the server signals a group change), so
+-- switches made by ANY means — homgb, caps lock (grp:caps_toggle),
+-- Alt+Shift, xkb-switch — update the tray indicator instantly and
+-- feed the per-app layout memory. The render loop additionally polls
+-- the group (cheap xcb request, rate-limited to 1/s) as a fallback.
 module Homgb.Keyboard
   ( LayoutState(..)
   , KeyboardEnv(..)
@@ -22,8 +26,10 @@ module Homgb.Keyboard
   , syncFocus
   ) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
+import Control.Monad (forever, forM_, void, when)
 import Control.Exception (SomeException, try)
 import Foreign.C.Types (CLong)
 import qualified Data.Map.Strict as Map
@@ -49,6 +55,9 @@ data KeyboardEnv = KeyboardEnv
   { kbState :: TVar LayoutState
   , kbSwitchConn :: Xcb.ConnPtr  -- ^ used by the grab thread (rotations)
   , kbPollConn :: Xcb.ConnPtr    -- ^ used by the render loop (indicator)
+  , kbEventConn :: Maybe Xcb.ConnPtr
+    -- ^ dedicated connection for the XKB state-notify event thread
+    -- (a connection is not thread-safe; each thread owns one)
   , kbPerApp :: Maybe PerAppState
     -- ^ Nothing when config keyboard.per-app is off
   }
@@ -70,10 +79,11 @@ currentLayout s = case drop (lsGroup s) (lsLayouts s) of
   (l:_) -> l
   [] -> ""
 
-startKeyboard :: Config -> IO (Maybe KeyboardEnv)
-startKeyboard config = do
+startKeyboard :: Config -> IO () -> IO (Maybe KeyboardEnv)
+startKeyboard config wake = do
   mSwitch <- Xcb.connect
   mPoll <- Xcb.connect
+  mEvent <- Xcb.connect
   case (mSwitch, mPoll) of
     (Just switchConn, Just pollConn) -> do
       layouts <- case configKbLayouts config of
@@ -95,12 +105,46 @@ startKeyboard config = do
             { kbState = tState
             , kbSwitchConn = switchConn
             , kbPollConn = pollConn
+            , kbEventConn = mEvent
             , kbPerApp = pa
             }
+      -- event-driven group tracking: block on XKB state-notify
+      forM_ mEvent $ \evConn -> do
+        ok <- Xcb.selectStateEvents evConn
+        if ok
+          then do
+            debugLn "keyboard: xkb state-notify events subscribed"
+            void $ forkIO $ eventLoop wake kb evConn
+          else hPutStrLn stderr "keyboard: xkb select events failed"
       return (Just kb)
     _ -> do
       hPutStrLn stderr "keyboard: failed to open xcb connection"
       return Nothing
+
+-- | XKB state-notify listener: blocks until the server reports a
+-- group change (homgb lock, caps lock, Alt+Shift, setxkbmap, ...),
+-- then adopts it — indicator updates on the next wake, and the new
+-- group is attributed to the focused app's per-app entry so EVERY
+-- switch method feeds the per-app memory. Dies quietly when the
+-- connection closes.
+eventLoop :: IO () -> KeyboardEnv -> Xcb.ConnPtr -> IO ()
+eventLoop wake kb evConn = forever $ do
+  mG <- Xcb.awaitGroup evConn
+  case mG of
+    Nothing -> return ()
+    Just newGroup -> do
+      now <- getCurrentTime
+      changed <- atomically $ do
+        s <- readTVar (kbState kb)
+        let changedNow = newGroup /= lsGroup s
+        writeTVar (kbState kb)
+          s { lsGroup = newGroup, lsQueriedAt = now }
+        return changedNow
+      -- no-op when the change originated from homgb itself
+      -- (rotateLayout/syncFocus already recorded it)
+      recordForFocused kb newGroup
+      debugLn $ "keyboard: xkb event group -> " ++ show newGroup
+      when changed wake
 
 -- | Rotate to the next layout: lock group (current+1) mod n via XCB.
 -- Called from the grab thread; also used by indicator clicks.

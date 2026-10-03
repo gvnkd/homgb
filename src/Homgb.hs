@@ -53,7 +53,7 @@ run = do
   let wake = SDL3.pushWakeEvent userEv
   tState <- startNotificationDaemon config wake
   tray <- startTray wake
-  kb <- startKeyboard config
+  kb <- startKeyboard config wake
   screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
   monitors <- case trayDisplay tray of
     Just dpy -> getMonitors dpy screen

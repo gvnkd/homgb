@@ -141,6 +141,19 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   sends the _NET_CURRENT_DESKTOP client message (C shim
   homgb_set_current_desktop) — XMonad.Hooks.EwmhDesktops honors it;
   NO xmonad.hs changes needed for the workspace part.
+- XKB STATE-NOTIFY listener (2026-10-03, Keyboard eventLoop):
+  event-driven group tracking on a THIRD xcb connection (kbEventConn),
+  thread blocks in xcb_wait_for_event (GHC 'safe' FFI — unsafe pins
+  the capability, the SDL lesson). Every group change — homgb lock,
+  caps (grp:caps_toggle), Alt+Shift, xkb-switch — now updates the
+  indicator instantly AND feeds per-app memory (recordForFocused in
+  the event handler), so ALL switch methods record. TWO xcb-xkb
+  gotchas cost a debugging round: (1) SelectEvents stateDetails must
+  be 0x3fff — wider masks (0xffff) get BadValue; (2) ALL XKB events
+  arrive with response_type == first_event ONLY — the specific type
+  is the xkbType byte (XCB_XKB_STATE_NOTIFY=2); first_event+type is
+  NOT the wire encoding. Verified on :0: caps-only per-app flow
+  (alacritty↔chromium) restores both ways.
 - Layout switch via CAPS (2026-10-03): pure xmonad CANNOT do it —
   XKB applies the Caps lock state at the server even when a passive
   XGrabKey/xmonad binding grabs the key. The fix is the XKB option

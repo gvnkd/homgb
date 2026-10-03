@@ -262,6 +262,62 @@ int homgb_xkb_supported(void *conn) {
   return ok;
 }
 
+/* Subscribe to XKB state-notify events (group changes) on this
+ * connection. Returns 0 on success. */
+int homgb_xkb_select_state_events(void *conn) {
+  xcb_connection_t *c = (xcb_connection_t *)conn;
+  xcb_xkb_select_events_details_t d;
+  memset(&d, 0, sizeof d);
+  /* valid StateNotify detail bits are 0x3fff (XCB_XKB_STATE_PART_*);
+   * wider masks are rejected with BadValue */
+  d.affectState = 0x3fff;
+  d.stateDetails = 0x3fff;
+  xcb_generic_error_t *err = NULL;
+  xcb_void_cookie_t ck = xcb_xkb_select_events_aux(
+      c, XCB_XKB_ID_USE_CORE_KBD,
+      XCB_XKB_EVENT_TYPE_STATE_NOTIFY,  /* affectWhich */
+      0,                                /* clear */
+      0,                                /* selectAll */
+      0,                                /* affectMap */
+      0,                                /* map */
+      &d);
+  err = xcb_request_check(c, ck);
+  if (err) {
+    free(err);
+    return -1;
+  }
+  return 0;
+}
+
+/* Block until the next XKB state-notify event and return the new
+ * effective group. Other events are discarded. -1 when the connection
+ * dies. Called on a dedicated connection from the keyboard event
+ * thread (GHC 'safe' FFI — it may block indefinitely). */
+int homgb_xkb_await_group(void *conn) {
+  xcb_connection_t *c = (xcb_connection_t *)conn;
+  const xcb_query_extension_reply_t *ext =
+    xcb_get_extension_data(c, &xcb_xkb_id);
+  if (!ext || !ext->present)
+    return -1;
+  /* ALL XKB events arrive with response_type == first_event; the
+   * specific type is the xkbType byte (XCB_XKB_STATE_NOTIFY=2) —
+   * first_event + type is NOT the wire encoding */
+  for (;;) {
+    xcb_generic_event_t *ev = xcb_wait_for_event(c);
+    if (!ev)
+      return -1;
+    int type = ev->response_type & 0x7f;
+    int group = -1;
+    if (type == ext->first_event
+        && ((xcb_xkb_state_notify_event_t *)ev)->xkbType
+             == XCB_XKB_STATE_NOTIFY)
+      group = ((xcb_xkb_state_notify_event_t *)ev)->group;
+    free(ev);
+    if (group >= 0)
+      return group;
+  }
+}
+
 int homgb_xkb_get_group(void *conn) {
   xcb_connection_t *c = (xcb_connection_t *)conn;
   xcb_generic_error_t *err = NULL;
