@@ -454,8 +454,8 @@ sepWidth = do
 -- centered in a content row of height rowH.
 centerCursorY :: Theme -> Float -> Float -> IO ()
 centerCursorY theme rowH h = do
-  ImVec2 x _ <- getCursorPos
-  withImVec2 (ImVec2 x (thTrayPadY theme + max 0 (rowH - h) / 2))
+  ImVec2 cx _ <- getCursorPos
+  withImVec2 (ImVec2 cx (thTrayPadY theme + max 0 (rowH - h) / 2))
     $ \p -> Raw.setCursorPos p
 
 -- | Measure the workspace section's width WITHOUT rendering (the
