@@ -141,6 +141,17 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   sends the _NET_CURRENT_DESKTOP client message (C shim
   homgb_set_current_desktop) — XMonad.Hooks.EwmhDesktops honors it;
   NO xmonad.hs changes needed for the workspace part.
+- Layout switch via CAPS (2026-10-03): pure xmonad CANNOT do it —
+  XKB applies the Caps lock state at the server even when a passive
+  XGrabKey/xmonad binding grabs the key. The fix is the XKB option
+  `grp:caps_toggle` (setxkbmap -option grp:alt_shift_toggle,...
+  in xmonad.hs startupHook): Caps toggles the group natively and
+  never capitalizes; homgb's indicator follows via the 1s group poll.
+  Same caveat as Alt+Shift: caps/alt-shift toggles bypass homgb's
+  per-app recording (only homgb-issued NextLayout records).
+  XTEST-verified on :0 (probe: /tmp/opencode/capsprobe.c; xdotool
+  key Caps_Lock reads stale via a separate process — use one-process
+  send+read probes for XKB state checks).
 - xmonad integration (~/.xmonad/xmonad.hs): xmobar spawnPipe +
   dynamicLogWithPP removed, deadd spawnOnce commented, homgb started
   via spawnOnce "/home/pion/bin/homgb-start &" — the launcher pgrep-
