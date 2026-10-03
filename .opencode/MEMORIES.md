@@ -237,6 +237,22 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   the first widget must draw at the cursor (no SameLine); `follow`
   args must only reflect items on the ANCHORED line. Verified with a
   private-bus homgb instance (zero tray items).
+- STALE-TOOLTIP DEADLINE SPIN (2026-10-03, cost a long debugging round):
+  offerTooltip writes trayTooltip ONLY while hovered; nothing clears
+  it, so after the pointer leaves the TVar holds TooltipInfo with
+  tiLastSeen/tiHoverAt in the PAST. The SURFACE hides via the
+  freshness gate in anyTooltipOpen, but nextDeadline computed
+  tipD = min(tiHoverAt+0.36, tiLastSeen+0.2) = PAST FOREVER →
+  waitMs = max 1 (ceiling negative) = 1ms → SDL's X-pump loop spun
+  at ~870Hz (~2.5-8% CPU) PERMANENTLY (until restart). Trigger looked
+  like "open any SNI menu" but was really the ICON HOVER that
+  precedes the right-click — any widget hover planted the landmine.
+  Trace signature: main thread in recvmsg(EAGAIN)-drains of the X fd
+  + ppoll(~0.86ms)=Timeout repeating. Fix: nextDeadline applies the
+  same freshness gate as anyTooltipOpen before honoring tipD.
+  LESSON: any deadline derived from a TVar that outlives its event
+  MUST be staleness-gated at read time — a deadline in the past is
+  a 1ms busy-loop (waitMs clamps at 1, never negative).
 - IDLE CPU (2026-10-03): 2-2.5% at "idle" came from TWO unconditional
   wake paths rendering full frames on background churn: (1)
   startBarEvents pushed `wake` on EVERY root X event (steam/chromium

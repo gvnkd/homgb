@@ -232,8 +232,17 @@ nextDeadline app = do
   tipD <- do
     mTip <- readTVarIO (trayTooltip (appTray app))
     case mTip of
-      Just tip -> return (min (tiHoverAt tip + 0.36) (tiLastSeen tip + 0.2))
-      Nothing -> return far
+      -- STALE entries must not become deadlines: offerTooltip only
+      -- writes while hovered, so after the pointer leaves the TVar
+      -- keeps the last TooltipInfo with tiLastSeen/tiHoverAt in the
+      -- PAST — a past deadline clamps waitMs to 1ms and the main
+      -- loop spun at ~870Hz (~2.5-8% CPU) until restart. Mirror the
+      -- freshness gate from 'anyTooltipOpen' (Render.hs): a stale
+      -- tooltip only matters through the 5s bar re-sync, not here.
+      Just tip | now - tiLastSeen tip < 0.15
+               , now - tiSince tip > 0.35 ->
+        return (min (tiHoverAt tip + 0.36) (tiLastSeen tip + 0.2))
+      _ -> return far
   embedD <- do
     mHost <- readTVarIO (trayXEmbedHost (appTray app))
     return (if isJust mHost then now + 0.2 else far)
