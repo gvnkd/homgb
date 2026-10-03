@@ -253,11 +253,15 @@ barActiveTitle s =
   wiTitle <$> find (\w -> wiXid w == barActiveWindow s) (barWindows s)
 
 -- | Render the clock widget ("HH:MM") at the current cursor position,
--- in the theme's bar.clock color (the rightmost bar item). Returns the
--- content width.
-renderClockWidget :: Theme -> Float -> IO Float
-renderClockWidget theme gap = do
-  sameLineS gap
+-- in the theme's bar.clock color (the rightmost bar item). `follow`
+-- (True when a right-group item already rendered at the cursor) gates
+-- the leading SameLine: SameLine reverts to the PREVIOUS line item —
+-- after the bar's absolute right-anchor jump (setCursorPos) that would
+-- silently chain off the left sections instead of the anchor.
+-- Returns the content width.
+renderClockWidget :: Theme -> Float -> Bool -> IO Float
+renderClockWidget theme gap follow = do
+  when follow $ sameLineS gap
   now <- zonedTimeToLocalTime <$> getZonedTime
   let label = T.pack (formatTime defaultTimeLocale "%H:%M" now)
   withImVec4 (thBarClock theme) $ \colPtr -> do
@@ -269,10 +273,11 @@ renderClockWidget theme gap = do
 
 -- | Render the date widget ("dd.mm") at the current cursor position,
 -- in the theme's muted bar.date color so it reads apart from the
--- clock. Returns the content width.
-renderDateWidget :: Theme -> Float -> IO Float
-renderDateWidget theme gap = do
-  sameLineS gap
+-- clock. `follow` gates the leading SameLine (see
+-- 'renderClockWidget'). Returns the content width.
+renderDateWidget :: Theme -> Float -> Bool -> IO Float
+renderDateWidget theme gap follow = do
+  when follow $ sameLineS gap
   now <- zonedTimeToLocalTime <$> getZonedTime
   let label = T.pack (formatTime defaultTimeLocale "%d.%m" now)
   withImVec4 (thBarDate theme) $ \colPtr -> do

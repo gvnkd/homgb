@@ -475,7 +475,7 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
             return True
       Nothing -> return False
     else return False
-  winRendered <-
+  _ <-
     if winOn then case mBar of
       Just barT -> do
         _ <- withDpy $ \dpy ->
@@ -500,11 +500,18 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   forM_ (zip [0 :: Int ..] embeds) $ \(idx, _) -> do
     when (idx > 0 || not (null items)) $ sameLineS traySpacing
     withImVec2 (ImVec2 itemW btn) $ \szPtr -> Raw.dummy szPtr
-  _ <- renderIndicator env kbEnv (configKbIndicator config) theme traySpacing
-         mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
-         winPos
-  _ <- renderDateWidget theme traySpacing
-  void $ renderClockWidget theme traySpacing
+  -- `follow` is ONLY about preceding RIGHT-GROUP items (tray icons /
+  -- XEmbed dummies): the group sits at the absolute 'slRightX' anchor
+  -- via setCursorPos, and a SameLine from its FIRST widget would
+  -- revert to the pre-jump line (after the title) — with an empty
+  -- tray the whole group then sticks to the title instead of the
+  -- right edge. The left sections (ws/title/win) must NOT set follow:
+  -- they are not on the anchored line.
+  indW <- renderIndicator env kbEnv (configKbIndicator config) theme
+            traySpacing mainFont btn (n > 0) winPos
+  let afterInd = n > 0 || indW > 0
+  dateW <- renderDateWidget theme traySpacing afterInd
+  void $ renderClockWidget theme traySpacing (afterInd || dateW > 0)
   where
     rowH = btn + 2 * framePadY
     withDpy f = case trayDisplay env of

@@ -227,6 +227,16 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   every-frame usage error auto-opened ImGui's Debug##Default window
   (the "V Debug" under the workspaces). Measure-only variants
   (measureWorkspaces/measureWinButtons) exist for the pre-Begin math.
+- BAR RIGHT-ANCHOR SameLine trap (2026-10-03): the bar's right group
+  is placed by an ABSOLUTE setCursorPos jump (slRightX), but
+  SameLine() reverts to the PREVIOUS LINE ITEM — so a SameLine from
+  the group's FIRST widget silently chains off the left sections
+  (the title) instead of the anchor. Manifested with an EMPTY tray:
+  the indicator (whose `follow` wrongly included ws/title/win) became
+  the first post-jump widget. Rule: after an absolute cursor jump,
+  the first widget must draw at the cursor (no SameLine); `follow`
+  args must only reflect items on the ANCHORED line. Verified with a
+  private-bus homgb instance (zero tray items).
 - IDLE CPU (2026-10-03): 2-2.5% at "idle" came from TWO unconditional
   wake paths rendering full frames on background churn: (1)
   startBarEvents pushed `wake` on EVERY root X event (steam/chromium
