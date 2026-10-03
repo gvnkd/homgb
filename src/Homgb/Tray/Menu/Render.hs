@@ -14,7 +14,7 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
 import Control.Monad (when, unless, forM, forM_, void)
 import Data.Bits ((.|.))
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -49,30 +49,50 @@ import Homgb.Theme (Theme(..))
 import Homgb.Tray.Menu.Client
 import Homgb.Tray.Menu.Tree
 
+-- | Rows exactly as rendered: invisible nodes dropped (they take no
+-- height in renderNode), submenu children indented ONE level
+-- regardless of actual tree depth — slack's exporter nests sibling
+-- chains (every item a children-display:submenu header holding the
+-- next), and proper dbusmenu clients never expand those eagerly
+-- (children are only valid after AboutToShow), so deeper indentation
+-- is noise. Shared by measureMenu and renderMenus so the analytic
+-- size can never diverge from what is drawn.
+menuRows :: LayoutNode -> [(Int, LayoutNode)]
+menuRows root = concatMap (row 0) (lnChildren root)
+  where
+    row depth n
+      | not (menuItemVisible n) = []
+      | menuItemChildrenDisplay n == Just "submenu"
+      = (depth, n) : concatMap (row (min (depth + 1) 1)) (lnChildren n)
+      | otherwise = [(depth, n)]
+
 -- | Fully analytic menu content size (menuW, menuH). Auto-fit
 -- windows are clamped to the viewport, so the surface can never
 -- learn the content size from the window (feedback deadlock) — and
 -- fixed-size surfaces clip long/wide menus. Labels measure pre-Begin
--- via calcTextSize; heights derive from the font line height.
+-- via calcTextSize; heights derive from the font line height and
+-- MUST mirror menuRows/renderRow: separator 0.6*lineH, submenu
+-- header a bare textDisabled label (lineH), selectable a framed
+-- widget (lineH + 2*framePadY); 4px item spacing BETWEEN rows.
 measureMenu :: Theme -> Maybe LayoutNode -> IO (Float, Float)
 measureMenu theme mTree = do
   ImVec2 _ lineH <- calcTextSize "A" True 0
-  let nodes = maybe [] lnChildren mTree
-      -- submenu headers render their children indented one level
-      flat = concatMap
-        (\n -> (0 :: Int, n)
-          : [ (1, c) | menuItemChildrenDisplay n == Just "submenu"
-                     , c <- lnChildren n ])
-        nodes
-  ws <- mapM (\(depth, n) -> do
-    let est = fromIntegral (T.length (toggleLabel n)) * lineH * 0.55
-    return (est + fromIntegral depth * 14)) flat
-  let heights =
-        [ if menuItemIsSeparator nd then lineH * 0.6
-          else lineH + 2 * framePadY + 4
-        | (_, nd) <- flat ]
-      menuW = maximum (0 : ws) + 2 * thMenuPadX theme + 12
-      menuH = sum heights + fromIntegral (max 0 (length flat - 1)) * 4
+  let rows = maybe [] menuRows mTree
+      labelOf n
+        | menuItemIsSeparator n = ""
+        | menuItemChildrenDisplay n == Just "submenu" =
+            stripMnemonic (menuItemLabel n)
+        | otherwise = toggleLabel n
+      heightOf (_, n)
+        | menuItemIsSeparator n = lineH * 0.6
+        | menuItemChildrenDisplay n == Just "submenu" = lineH
+        | otherwise = lineH + 2 * framePadY
+      est (depth, n) =
+        fromIntegral (T.length (labelOf n)) * lineH * 0.55
+          + fromIntegral depth * 14
+      menuW = maximum (0 : map est rows) + 2 * thMenuPadX theme + 12
+      menuH = sum (map heightOf rows)
+        + fromIntegral (max 0 (length rows - 1)) * 4
         + 2 * thMenuPadY theme + lineH * 0.5
   return (menuW, menuH)
 
@@ -88,6 +108,11 @@ data MenuState = MenuState
   , msOpenedAt :: POSIXTime
   , msErrLogAt :: POSIXTime
     -- ^ last time a GetLayout error was logged (rate limiting)
+  , msFitH :: Maybe Float
+    -- ^ content height measured from the drawn cursor position (exact,
+    --   font-agnostic); Nothing until the first drawn frame, then it
+    --   drives setNextWindowSize — the analytic 'measureMenu' height is
+    --   only the first-frame fallback
   }
 
 -- | Keyed by the item's bus name string; keeps the ItemInfo around so
@@ -130,6 +155,7 @@ openItemMenu client menus info trayWinPos trayH screenSize wake =
               { msVisible = v
               , msPos = pos
               , msOpenedAt = if v then now else msOpenedAt st
+              , msFitH = if v then Nothing else msFitH st
               }) others)
             return v
           Nothing -> do
@@ -142,6 +168,7 @@ openItemMenu client menus info trayWinPos trayH screenSize wake =
                 , msPos = pos
                 , msOpenedAt = now
                 , msErrLogAt = 0
+                , msFitH = Nothing
                 })
               (hideOthers key m))
             return True
@@ -188,7 +215,8 @@ renderMenus client menus prevButtons mDisplay theme winPos wake = do
         -- (window can't outgrow the surface, surface waits for the
         -- window). Labels measure fine pre-Begin; heights use the
         -- font's line height (frame height + item spacing).
-        (menuW, menuH) <- measureMenu theme (msTree st)
+        (menuW, menuH0) <- measureMenu theme (msTree st)
+        let menuH = fromMaybe menuH0 (msFitH st)
         withImVec2 (ImVec2 0 0) $ \posPtr ->
           Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
         withImVec2 (ImVec2 menuW menuH) $ \sizePtr ->
@@ -206,8 +234,21 @@ renderMenus client menus prevButtons mDisplay theme winPos wake = do
               r <- if beginVisible
                 then do
                   forM_ (msTree st) $ \tree ->
-                    forM_ (lnChildren tree) $
-                      renderNode client menus key path info
+                    forM_ (menuRows tree) $ \(depth, node) -> do
+                      when (depth > 0) $ indent 14
+                      renderRow client menus key path info node
+                      when (depth > 0) $ unindent 14
+                  -- exact content height for the NEXT frame's
+                  -- setNextWindowSize: the cursor sits below the last
+                  -- row in window coordinates (WindowPadding pushed at
+                  -- the top), so cursorY + bottom padding + border is
+                  -- the fitted window height — immune to font metrics,
+                  -- separator heights, and item spacing (the analytic
+                  -- measureMenu is only the pre-first-frame fallback)
+                  ImVec2 _ cursorY <- getCursorPos
+                  let fittedH = cursorY + thMenuPadY theme + 2
+                  atomically $ modifyTVar' menus $
+                    Map.adjust (\(i, p, s) -> (i, p, s { msFitH = Just fittedH })) key
                   -- measure AFTER drawing: auto-resize windows only
                   -- update their size at frame end, so a pre-content
                   -- read is stale (an empty bbox) — this value also
@@ -265,22 +306,16 @@ samplePressEdge (Just dpy) prevVar = do
   let pressed = fst cur && not (fst prev) || snd cur && not (snd prev)
   return (pressed, fromIntegral rx, fromIntegral ry)
 
--- | Renders one node; closes the menu (via 'closeMenu') when a leaf
--- item is clicked.
-renderNode :: Client -> Menus -> String -> ObjectPath -> ItemInfo
-           -> LayoutNode -> IO ()
-renderNode client menus key path info node
-  | not (menuItemVisible node) = return ()
+-- | Renders one menuRows row; closes the menu (via 'closeMenu') when
+-- a leaf item is clicked. Submenu headers are non-clickable labels
+-- (beginMenu is unreliable outside menu bars in this ImGui version);
+-- their children are flattened into the row list by menuRows.
+renderRow :: Client -> Menus -> String -> ObjectPath -> ItemInfo
+          -> LayoutNode -> IO ()
+renderRow client menus key path info node
   | menuItemIsSeparator node = Raw.separator
-  | menuItemChildrenDisplay node == Just "submenu" = do
-      -- beginMenu is unreliable outside menu bars in this ImGui version;
-      -- render submenu headers as non-clickable labels with indented
-      -- children (dbusmenu submenus are rare in tray menus).
+  | menuItemChildrenDisplay node == Just "submenu" =
       textDisabled (stripMnemonic (menuItemLabel node))
-      forM_ (lnChildren node) $ \child -> do
-        indent 14
-        renderNode client menus key path info child
-      unindent 14
   | otherwise = do
       let label = toggleLabel node
       beginDisabled (not (menuItemEnabled node))
@@ -346,7 +381,8 @@ fetchLayout wake client menus key = do
                 Nothing -> return ()
               atomically $ modifyTVar' menus $
                 Map.adjust (\(i, p, s) ->
-                  (i, p, s { msTree = Just tree, msRevision = revision })) key
+                  (i, p, s { msTree = Just tree, msRevision = revision
+                           , msFitH = Nothing })) key
               wake
 
 watch :: IO () -> Client -> Menus -> String -> IO ()

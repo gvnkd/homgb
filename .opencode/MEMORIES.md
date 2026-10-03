@@ -554,6 +554,19 @@ wrapper (see AGENTS.md): `~/bin/env-wrap cabal build`.
   the metrics window (`Raw.showMetricsWindow`); its Windows/DrawLists
   sections enumerate every ImGui window with vertex counts — the fastest
   way to find who renders what.
+- dbusmenu rendering (Menu/Render): slack's exporter nests sibling items
+  in a chain (every item children-display:submenu holding the next);
+  proper clients never expand those eagerly (children are only valid
+  after AboutToShow). homgb renders via ONE shared `menuRows`
+  flattener (invisible dropped, indent capped at ONE level for any
+  depth) consumed by BOTH measureMenu and renderMenus — measure/render
+  divergence was the bottom-empty-space bug (plus invisible rows
+  counted, headers measured as padded selectables, spacing
+  double-counted). Window height CONVERGES instead of pure analytics:
+  after drawing, cursorY + padY + 2 → msFitH drives the next frame's
+  setNextWindowSize (analytic height = first-frame fallback only;
+  reset on open/refetch). Screenshot-verified on :0 (blueman menu hugs
+  content).
 - dbusmenu: `Event`/`GetLayout`/`AboutToShow` must be sent to the item's
   **Menu object path** (from the `Menu` property, e.g.
   `/org/ayatana/NotificationItem/steam/Menu`), NOT the item path. Root
