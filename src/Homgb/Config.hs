@@ -168,7 +168,10 @@ data Config = Config
     -- shrinks to whatever space the spacer leaves before truncating)
   , configBarStruts :: Bool
     -- ^ set _NET_WM_STRUT_PARTIAL so avoidStruts reserves the bar's
-    -- strip (layout mode)
+    --   strip (layout mode)
+  , configBarStrutGap :: Int
+    -- ^ extra pixels reserved below the bar surface (layout mode):
+    --   strut depth = surface height + gap; 0 = windows touch the bar
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -329,6 +332,8 @@ instance FromJSON Config where
     <*> secondLevel o "bar" "window-title-max" 200
   -- configBarStruts
     <*> secondLevel o "bar" "struts" True
+  -- configBarStrutGap
+    <*> secondLevel o "bar" "strut-gap" 0
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -364,6 +369,7 @@ data ThemeConfig = ThemeConfig
   , tcPopupPadY :: Maybe Float
   , tcMenuPadX :: Maybe Float
   , tcMenuPadY :: Maybe Float
+  , tcBarBorderSize :: Maybe Float
   }
 
 defaultThemeConfig :: ThemeConfig
@@ -381,6 +387,7 @@ defaultThemeConfig = ThemeConfig
   , tcPopupPadY = Nothing
   , tcMenuPadX = Nothing
   , tcMenuPadY = Nothing
+  , tcBarBorderSize = Nothing
   }
 
 instance FromJSON ThemeConfig where
@@ -431,6 +438,7 @@ instance FromJSON ThemeConfig where
       <*> pure ppy
       <*> pure mpx
       <*> pure mpy
+      <*> sizeOf "bar" "border-size"
     where
       -- theme.sizes.<section>.<key>
       sizeOf section key = do
@@ -510,6 +518,7 @@ defaultConfigText = Text.pack $ unlines
   , "  windows: false"
   , "  window-title-max: 200"
   , "  struts: true"
+  , "  strut-gap: 0"
   , "theme:"
   , "  font:"
   , "    family: \"Noto Sans\""

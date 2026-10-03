@@ -73,10 +73,11 @@ newEmbedState = newTVarIO []
 -- | Drain pending dock/undock events. Call once per frame from the
 -- render thread (XCheckMaskEvent is cheap when idle). `slotPos` maps
 -- a docked icon's index to its (x, y, size) in tray-surface-local
--- pixels.
+-- pixels; `bg` is the slot background RGB (slots are 24-bit X windows
+-- with no alpha — give them the bar's color instead of black).
 pumpEmbedEvents :: EmbedState -> TVar [XEmbedIcon]
-                -> (Int -> (Int, Int, Int)) -> IO ()
-pumpEmbedEvents env icons slotPos = drain
+                -> (Int -> (Int, Int, Int)) -> (Int, Int, Int) -> IO ()
+pumpEmbedEvents env icons slotPos bg = drain
   where
     dpy = esDisplay env
     drain = do
@@ -104,7 +105,9 @@ pumpEmbedEvents env icons slotPos = drain
       existing <- readTVarIO icons
       when (client `notElem` map eiClient existing) $ do
         let (x, y, sz) = slotPos (length existing)
+            (r, g, b) = bg
         slot <- c_dock dpy (esTrayWindow env) client x y sz (esTimestamp env)
+                  r g b
         case slot of
           0 -> hPutStrLn stderr "tray: XEmbed dock failed (client gone?)"
           _ -> do
@@ -136,7 +139,8 @@ foreign import ccall "homgb_xembed_acquire" c_acquire
 foreign import ccall "homgb_xembed_opcode_atom" c_opcode_atom
   :: Display -> IO CLong
 foreign import ccall "homgb_xembed_dock" c_dock
-  :: Display -> Window -> Window -> Int -> Int -> Int -> CLong -> IO Window
+  :: Display -> Window -> Window -> Int -> Int -> Int -> CLong
+  -> Int -> Int -> Int -> IO Window
 foreign import ccall "homgb_xembed_move" c_move
   :: Display -> Window -> Int -> Int -> Int -> IO ()
 foreign import ccall "homgb_xembed_undock" c_undock

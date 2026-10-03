@@ -115,23 +115,36 @@ int homgb_xembed_acquire(Display *dpy, Window parent, int screen,
 
 /* Dock `client` into a fresh slot window (child of the tray surface
  * at x,y btn-sized), reparent, map, and announce XEMBED_EMBEDDED_NOTIFY.
- * Returns the slot window. */
+ * bg_r/g/b tint the slot background (slots are 24-bit, no alpha — the
+ * bar's color beats black in the unpainted regions). Returns the slot
+ * window. */
 Window homgb_xembed_dock(Display *dpy, Window parent, Window client,
-                         int x, int y, int size, long ts) {
+                         int x, int y, int size, long ts,
+                         int bg_r, int bg_g, int bg_b) {
   Window slot;
   if (g_visual) {
     XSetWindowAttributes a;
+    XColor color;
+    color.red = (short)(bg_r * 257);
+    color.green = (short)(bg_g * 257);
+    color.blue = (short)(bg_b * 257);
+    XAllocColor(dpy, g_cmap, &color);
     a.colormap = g_cmap;
-    a.background_pixel = 0;
+    a.background_pixel = color.pixel;
     a.border_pixel = 0;
     slot = XCreateWindow(dpy, parent, x, y, size, size, 0, g_depth,
-                         InputOutput, g_visual,
-                         CWColormap | CWBackPixel | CWBorderPixel, &a);
+                          InputOutput, g_visual,
+                          CWColormap | CWBackPixel | CWBorderPixel, &a);
   } else {
     slot = XCreateSimpleWindow(dpy, parent, x, y, size, size, 0, 0, 0);
   }
   XSelectInput(dpy, slot, SubstructureNotifyMask);
   XReparentWindow(dpy, client, slot, 0, 0);
+  /* Clients that assume a composited 32-bit tray may leave their
+   * (24-bit) icon window unpainted; let those regions show the slot
+   * background instead of the client's own black. */
+  XSetWindowBackgroundPixmap(dpy, client, ParentRelative);
+  XClearWindow(dpy, client);
   XMapWindow(dpy, slot);
   {
     XClientMessageEvent ev;

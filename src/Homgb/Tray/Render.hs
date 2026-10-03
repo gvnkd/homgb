@@ -16,7 +16,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Coerce (coerce)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Foreign.C.Types (CFloat(..))
+import Foreign.C.Types (CFloat(..), CInt(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr, castPtr)
 import Foreign.Storable (poke)
@@ -75,11 +75,20 @@ dbgPassive state visible = do
 -- | Drain XEmbed dock/undock events and move docked icon slots to
 -- their row positions. No-op unless tray.xembed is on and the
 -- selection was acquired.
-pumpEmbeds :: TrayEnv -> Config -> (Int -> (Int, Int, Int)) -> IO ()
-pumpEmbeds env config slotPos =
+pumpEmbeds :: TrayEnv -> Config -> Theme -> (Int -> (Int, Int, Int)) -> IO ()
+pumpEmbeds env config theme slotPos =
   when (configTrayXEmbed config) $ do
     mHost <- readTVarIO (trayXEmbedHost env)
-    forM_ mHost $ \host -> pumpEmbedEvents host (trayXEmbed env) slotPos
+    forM_ mHost $ \host ->
+      pumpEmbedEvents host (trayXEmbed env) slotPos (barBgRgb theme)
+
+-- | Bar background as 0-255 RGB for the XEmbed slot background
+-- (slots are 24-bit X windows — no alpha — so unpainted regions get
+-- the bar's color instead of black).
+barBgRgb :: Theme -> (Int, Int, Int)
+barBgRgb theme =
+  let ImVec4 r g b _ = thBarBg theme
+  in (round (r * 255), round (g * 255), round (b * 255))
 
 placeEmbeds :: TrayEnv -> Config -> (Int -> (Int, Int, Int)) -> IO ()
 placeEmbeds env config slotPos =
@@ -179,6 +188,8 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
     withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
       Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
       Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
+      c_push_style_var_float (coerce ImGuiStyleVar_WindowBorderSize)
+        (realToFrac (thBarBorderSize theme))
       beginVisible <- BS.useAsCString "homgb-tray"
         $ \label -> Raw.begin label Nothing (Just trayFlags)
       (kbWidth, barWidth) <- if beginVisible
@@ -210,7 +221,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
           return (kbW0, barW0)
         else return (0, 0)
       end
-      Raw.popStyleVar 1
+      Raw.popStyleVar 2
       popStyleColor 1
       return (kbWidth, barWidth)
   -- Analytic size: ImGui windows are clipped to the host viewport
@@ -239,7 +250,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
             + floor framePadX
         , floor (thTrayPadY theme) + floor framePadY
         , floor btn )
-  pumpEmbeds env config slotPos
+  pumpEmbeds env config theme slotPos
   placeEmbeds env config slotPos
   return (trayW, h)
   where
@@ -296,22 +307,31 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       ++ show (map snd (slLeft sects)) ++ " right="
       ++ show (map snd (slRight sects)) ++ " spacer=" ++ show spacerW
     Nothing -> return ()
+  let ImVec2 _surfW surfH = surfSize
   _ <- withImVec4 (thBarBg theme) $ \bgPtr ->
-    withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
-      Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
-      Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
-      withImVec2 (ImVec2 0 0) $ \posPtr ->
-        Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
-      withImVec2 (ImVec2 (fromIntegral monW) contentH) $ \sizePtr ->
-        Raw.setNextWindowSize sizePtr ImGuiCond_Always
-      beginVisible <- BS.useAsCString "homgb-tray"
-        $ \label -> Raw.begin label Nothing (Just trayFlags)
-      when beginVisible $
-        renderRow env textures config theme kbEnv mainFont mBar items
-          embeds iconSize btn traySpacing sects spacerW surfSize winPos screenSize
-      end
-      Raw.popStyleVar 1
-      popStyleColor 1
+    withImVec4 (thBarBorder theme) $ \borderPtr ->
+      withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
+        Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+        Raw.pushStyleColor ImGuiCol_Border borderPtr
+        Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
+        c_push_style_var_float (coerce ImGuiStyleVar_WindowBorderSize)
+          (realToFrac (thBarBorderSize theme))
+        withImVec2 (ImVec2 0 0) $ \posPtr ->
+          Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+        -- span the whole surface height (surfH = content + the hug
+        -- fudge): a content-height window leaves a transparent strip
+        -- between the bar paint and the strut edge, which reads as a
+        -- gap above the tiled windows
+        withImVec2 (ImVec2 (fromIntegral monW) surfH) $ \sizePtr ->
+          Raw.setNextWindowSize sizePtr ImGuiCond_Always
+        beginVisible <- BS.useAsCString "homgb-tray"
+          $ \label -> Raw.begin label Nothing (Just trayFlags)
+        when beginVisible $
+          renderRow env textures config theme kbEnv mainFont mBar items
+            embeds iconSize btn traySpacing sects spacerW surfSize winPos screenSize
+        end
+        Raw.popStyleVar 2
+        popStyleColor 2
   -- move XEmbed icon slots to their right-group positions. The
   -- sections render with `gap` between them, so the group's left edge
   -- is monW - pad - (widths + gaps); forgetting the gaps shifted the
@@ -326,7 +346,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
             + floor framePadX
         , floor (thTrayPadY theme) + floor framePadY
         , floor btn )
-  pumpEmbeds env config slotPos
+  pumpEmbeds env config theme slotPos
   placeEmbeds env config slotPos
   return (fromIntegral monW, btn + 2 * framePadY + 2 * thTrayPadY theme)
   where
@@ -382,7 +402,11 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
           right = filter fst [ (iconsW > 0, iconsW), (kbW > 0, kbW)
                              , (dateW > 0, dateW), (clockW > 0, clockW) ]
           gaps = gap * (leftGaps + rightGaps + spacerGaps)
-      return (SectionLayout left right gaps titleW (gap * rightGaps))
+      -- the embed anchor: the right group's left edge sits spacerGaps
+      -- * gap left of monW - pad - right widths (the spacer reserves
+      -- that breathing room), so the slots must account for it
+      return (SectionLayout left right gaps titleW
+               (gap * (rightGaps + spacerGaps)))
     sectionSum ps = sum (map snd ps)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
@@ -524,6 +548,11 @@ renderItem env textures theme _iconSize btn _traySpacing _idx item surfSize
       label = T.encodeUtf8 (T.pack (show (coerce name :: String)))
 
   mTex <- trayTexture textures (thTrayIconSize theme) item
+  -- ImageButton draws its frame with ImGuiCol_Button (default style:
+  -- a light blue at 0.40 alpha) regardless of the transparent
+  -- bg_col — neutralize the button palette so only the icon art
+  -- shows.
+  let transparent = ImVec4 0 0 0 0
   clicked <- case mTex of
     Just tex ->
       BS.useAsCString label $ \labelPtr ->
@@ -532,19 +561,27 @@ renderItem env textures theme _iconSize btn _traySpacing _idx item surfSize
             alloca $ \uv0Ptr ->
               alloca $ \uv1Ptr ->
                 alloca $ \bgPtr ->
-                  alloca $ \tintPtr -> do
-                    poke refPtr (ImTextureRef nullPtr (fromIntegral tex))
-                    poke sizePtr (ImVec2 btn btn)
-                    poke uv0Ptr (ImVec2 0 0)
-                    poke uv1Ptr (ImVec2 1 1)
-                    -- ImageButton order is (str_id, tex_ref, size, uv0,
-                    -- uv1, bg_col, tint_col) — do NOT swap these:
-                    -- tint alpha 0 + white bg renders the icon as a
-                    -- solid white square.
-                    poke bgPtr (ImVec4 0 0 0 0)
-                    poke tintPtr (ImVec4 1 1 1 1)
-                    Raw.imageButton labelPtr refPtr sizePtr uv0Ptr uv1Ptr
-                                    bgPtr tintPtr
+                  alloca $ \tintPtr ->
+                    withImVec4 transparent $ \btnColPtr ->
+                      withImVec4 transparent $ \hovColPtr ->
+                        withImVec4 transparent $ \actColPtr -> do
+                          poke refPtr (ImTextureRef nullPtr (fromIntegral tex))
+                          poke sizePtr (ImVec2 btn btn)
+                          poke uv0Ptr (ImVec2 0 0)
+                          poke uv1Ptr (ImVec2 1 1)
+                          -- ImageButton order is (str_id, tex_ref, size,
+                          -- uv0, uv1, bg_col, tint_col) — do NOT swap
+                          -- these: tint alpha 0 + white bg renders the
+                          -- icon as a solid white square.
+                          poke bgPtr (ImVec4 0 0 0 0)
+                          poke tintPtr (ImVec4 1 1 1 1)
+                          Raw.pushStyleColor ImGuiCol_Button btnColPtr
+                          Raw.pushStyleColor ImGuiCol_ButtonHovered hovColPtr
+                          Raw.pushStyleColor ImGuiCol_ButtonActive actColPtr
+                          c <- Raw.imageButton labelPtr refPtr sizePtr
+                                   uv0Ptr uv1Ptr bgPtr tintPtr
+                          popStyleColor 3
+                          return c
     Nothing ->
       smallButton (T.pack (take 1 (safeTitle (iconTitle info))))
 
@@ -635,4 +672,8 @@ withImVec4 v f = alloca $ \p -> poke p v >> f p
 combineFlags :: ImGuiWindowFlags -> ImGuiWindowFlags -> ImGuiWindowFlags
 combineFlags (ImGuiWindowFlags a) (ImGuiWindowFlags b) =
   ImGuiWindowFlags (a .|. b)
+
+-- dear-imgui 2.5 has no float PushStyleVar binding (see the cpp shim).
+foreign import ccall "homgb_push_style_var_float" c_push_style_var_float
+  :: CInt -> CFloat -> IO ()
  

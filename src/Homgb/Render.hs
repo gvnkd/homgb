@@ -195,7 +195,7 @@ drawTraySurface app = do
       -- full-width bar hugging the monitor's top edge
       resizeSurfaceWindow surf (monW mon) (floor h + 2)
       moveSurfaceWindow surf (monX mon) (monY mon)
-      updateStrut app surf mon (floor h + 2)
+      updateStrut app surf mon (floor h + 2 + configBarStrutGap config)
     else do
       let (mx, my) = (monX mon, monY mon)
           (mw, mh) = (monW mon, monH mon)

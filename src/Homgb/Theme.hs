@@ -76,6 +76,9 @@ data Theme = Theme
   , thBarBg :: ImVec4
   , thBarClock :: ImVec4
   , thBarDate :: ImVec4
+  -- status bar border (theme sizes.bar.border-size, 0 = off)
+  , thBarBorder :: ImVec4
+  , thBarBorderSize :: Float
   -- sizes (icon size / spacing fall back to the legacy config keys)
   , thTrayIconSize :: Int
   , thTraySpacing :: Int
@@ -131,6 +134,8 @@ mkTheme config = do
     , thBarBg = color "bar.bg" (ImVec4 0.09 0.10 0.11 0.85)
     , thBarClock = color "bar.clock" (ImVec4 0.95 0.95 0.95 1.0)
     , thBarDate = color "bar.date" (ImVec4 0.55 0.58 0.62 1.0)
+    , thBarBorder = color "bar.border" (ImVec4 0.43 0.43 0.50 0.50)
+    , thBarBorderSize = fromMaybe 0 (tcBarBorderSize tc)
     , thTrayIconSize = fromMaybe (configTrayIconSize config) (tcTrayIconSize tc)
     , thTraySpacing = fromMaybe (configTraySpacing config) (tcTraySpacing tc)
     , thTrayPadX = fromMaybe 8 (tcTrayPadX tc)

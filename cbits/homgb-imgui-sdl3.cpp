@@ -65,4 +65,10 @@ void *homgb_add_merged_font(const char *filename, float size_pixels,
  * argument; tray.spacing needs it. */
 void homgb_same_line(float spacing) { ImGui::SameLine(0.0f, spacing); }
 
+/* dear-imgui 2.5 binds only the ImVec2 PushStyleVar overload; the
+ * float variant (WindowBorderSize, Alpha, ...) needs this shim. */
+void homgb_push_style_var_float(int var, float value) {
+  ImGui::PushStyleVar((ImGuiStyleVar)var, value);
+}
+
 } // extern "C"
