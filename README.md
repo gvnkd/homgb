@@ -21,6 +21,10 @@ and layout indicators with a single immediate-mode application.
   icons; right-click **dbusmenu** on its own `POPUP_MENU` surface;
   hover tooltips (incl. multi-line, emoji) on their own `TOOLTIP`
   surface; left-click `Activate` (async, never blocks the UI).
+  Plus a legacy **XEmbed system-tray host** (`tray.xembed`, default
+  on): homgb owns `_NET_SYSTEM_TRAY_S0` and announces itself with
+  the ICCCM MANAGER broadcast, so XEmbed-only apps (Telegram
+  Desktop) dock without a restart — stop `trayer` when enabled.
 - **Keyboard layout manager** — XKB group lock via xcb (no
   `setxkbmap` round-trips, survives keymap reloads); **no global key
   grabs**: the WM binds shortcuts to the `org.homgb.Control` DBus
@@ -171,8 +175,9 @@ Notes:
 - Drop the old panel stack: remove the `xmobar` spawnPipe/`logHook`
   and the `deadd-notification-center` spawnOnce (homgb owns
   `org.freedesktop.Notifications`).
-- Keep `trayer` only while you still need XEmbed icons (e.g.
-  Sunshine); homgb's tray is SNI-only.
+- Keep `trayer` only while you still need it **and** `tray.xembed`
+  is off (both want the `_NET_SYSTEM_TRAY_S0` selection; homgb logs
+  and disables XEmbed when another tray owns it).
 - `M-b`/`ToggleStruts`: with struts off, tiled windows overlap the
   bar's strip and the bar auto-hides by design — it reappears when
   the strip is free again.

@@ -2,7 +2,8 @@
 
 module Homgb (run) where
 
-import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO)
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
 import Control.Exception (bracket_)
 import Control.Monad (forM, forM_, unless, void)
 import Control.Monad.IO.Class
@@ -33,6 +34,7 @@ import Homgb.State
 import Homgb.Surface
 import Homgb.Theme (applyFont, mkTheme)
 import Homgb.Tray (TrayEnv(..), startTray)
+import Homgb.Tray.Embed (acquireTraySelection)
 import Homgb.WMProps (WmClass(..))
 
 run :: IO ()
@@ -79,6 +81,17 @@ run = do
     tagSurface dpy menuSurf WmPopupMenu
     tagSurface dpy tooltipSurf WmTooltip
   mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf]
+  -- become the XEmbed tray host (trayer must not be running):
+  -- the ICCCM MANAGER broadcast wakes already-running XEmbed apps
+  -- (Telegram-desktop) so they dock without a restart.
+  mEmbed <- case (configTrayXEmbed config, trayDisplay tray) of
+    (True, Just dpy) -> do
+      mId <- surfaceX11Id traySurf
+      case mId of
+        Just wid -> acquireTraySelection dpy (fromIntegral wid)
+        Nothing -> return Nothing
+    _ -> return Nothing
+  atomically $ writeTVar (trayXEmbedHost tray) mEmbed
   -- making a GL context current maps a hidden SDL window; the
   -- popup/menu/center/tooltip surfaces start hidden (skip-draw while
   -- idle)

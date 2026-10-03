@@ -27,6 +27,7 @@ import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
 import qualified StatusNotifier.Watcher.Client as Watcher
 
+import Homgb.Tray.Embed (EmbedState, XEmbedIcon)
 import Homgb.Tray.Menu.Render (Menus, newMenus)
 import Homgb.WMProps (installErrorHandler)
 
@@ -71,6 +72,10 @@ data TrayEnv = TrayEnv
   , trayTooltip :: TVar (Maybe TooltipInfo)
   , trayHoverKey :: TVar (Maybe (String, POSIXTime))
     -- ^ which item is hovered and since when (tooltip show delay)
+  , trayXEmbed :: TVar [XEmbedIcon]
+    -- ^ XEmbed-docked icon windows (legacy tray protocol)
+  , trayXEmbedHost :: TVar (Maybe EmbedState)
+    -- ^ set after the selection is acquired (tray.xembed)
   }
 
 startTray :: IO TrayEnv
@@ -81,12 +86,14 @@ startTray = do
   prevButtons <- newTVarIO (False, False)
   tooltip <- newTVarIO Nothing
   hoverKey <- newTVarIO Nothing
+  xembed <- newTVarIO []
+  xembedHost <- newTVarIO Nothing
   mDisplay <- catch (Just <$> openDisplay "") ignoreIO
   forM_ mDisplay installErrorHandler
   client <- connectSession
   _ <- forkIO $ runHost tState client
   return $ TrayEnv tState client textures menus prevButtons mDisplay
-    tooltip hoverKey
+    tooltip hoverKey xembed xembedHost
 
 ignoreIO :: IOException -> IO (Maybe Display)
 ignoreIO _ = return Nothing

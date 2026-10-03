@@ -68,6 +68,32 @@
   watchdog: 3s after a successful build, if the watcher's
   RegisteredStatusNotifierItems outnumber our tray items, rebuild
   the host (a fresh build replays the full map).
+- XEmbed tray host (tray.xembed, Homgb.Tray.Embed +
+  cbits/homgb-tray-embed.c): homgb owns _NET_SYSTEM_TRAY_S0, sends
+  the ICCCM MANAGER ClientMessage (ICCCM 2.8) so running apps dock
+  without restart (this is how trayer "magically" collects running
+  apps). Gotchas learned the hard way:
+  * XCheckMaskEvent SILENTLY DROPS ClientMessages (sent-event mask
+    matching is unreliable across sender conventions) — the dock
+    request sat in the queue while polls returned nothing. Use
+    XCheckIfEvent with an always-true predicate (also needed for
+    NoEventMask XEMBED protocol messages).
+  * A reparented icon whose new parent is unmapped gets UNMAPPED; we
+    XMapWindow(client) after EMBEDDED_NOTIFY. Real clients create
+    their icon UNMAPPED and map on EMBEDDED_NOTIFY — never map under
+    root (the WM would tile it; the "one" test icon ended up
+    2302x2104 adopted by xmonad).
+  * When the embedder dies, X11 DESTROYS docked icon windows (all
+    inferiors go). Real clients recreate + re-dock (Qt semantics) —
+    verified with a test client. homgb rejects docks of dead windows
+    (XQueryTree parent check after reparent).
+  * Selection/MANAGER timestamps: real server timestamp from a dummy
+    property change (grab_timestamp), never CurrentTime (ICCCM).
+  * Only one XEmbed owner per screen: if trayer owns the selection,
+    acquire fails -> log + SNI-only.
+  * Test client: /tmp/opencode/xembed-test.c (gcc -lX11); watch
+    MANAGER on root with StructureNotifyMask, recreate the window on
+    DestroyNotify.
 
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
 SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.

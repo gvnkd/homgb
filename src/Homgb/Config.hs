@@ -146,6 +146,11 @@ data Config = Config
   , configTrayShowPassive :: Bool
     -- ^ show SNI items that report Status=Passive (many apps —
     -- Telegram, Electron clients — misuse it; Plasma shows them)
+  , configTrayXEmbed :: Bool
+    -- ^ host legacy XEmbed system-tray icons (Telegram-desktop and
+    -- other XEmbed-only apps); homgb owns _NET_SYSTEM_TRAY_S0 and
+    -- announces itself with the ICCCM MANAGER message. Disable when
+    -- another XEmbed tray (trayer) owns the selection.
 
   -- theming (raw @theme:@ section; see Homgb.Theme)
   , configTheme :: ThemeConfig
@@ -310,6 +315,8 @@ instance FromJSON Config where
     <*> secondLevel o "tray" "behind-windows" False
   -- configTrayShowPassive
     <*> secondLevel o "tray" "show-passive" True
+  -- configTrayXEmbed
+    <*> secondLevel o "tray" "xembed" True
   -- configTheme
     <*> firstLevel o "theme" defaultThemeConfig
   -- configBarLayout
@@ -496,6 +503,7 @@ defaultConfigText = Text.pack $ unlines
   , "  follow-mouse: false"
   , "  behind-windows: false"
   , "  show-passive: true"
+  , "  xembed: true"
   , "bar:"
   , "  layout: true"
   , "  workspaces: true"

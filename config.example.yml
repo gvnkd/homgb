@@ -185,6 +185,14 @@ tray:
   # Electron clients) mark themselves Passive; Plasma shows them too.
   show-passive: true
 
+  # Host legacy XEmbed system-tray icons (Telegram-desktop and other
+  # XEmbed-only apps) in addition to SNI. homgb owns the
+  # _NET_SYSTEM_TRAY_S0 selection and announces itself with the
+  # ICCCM MANAGER broadcast, so already-running XEmbed apps dock
+  # without a restart. Only ONE XEmbed tray may own the selection —
+  # stop trayer (or any other XEmbed tray) when this is on.
+  xembed: true
+
 # -------------------------------------------------------------------
 # Bar (xmobar replacement; rendered inside the tray surface)
 # -------------------------------------------------------------------

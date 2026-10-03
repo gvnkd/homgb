@@ -27,6 +27,7 @@ library
                      , Homgb.Notifications.Daemon
                      , Homgb.Tray
                      , Homgb.Tray.Icons
+                     , Homgb.Tray.Embed
                      , Homgb.Tray.Render
                       , Homgb.Tray.Menu.Client
                       , Homgb.Tray.Menu.Tree
@@ -62,6 +63,7 @@ library
                      , haskell-gettext
                      , lens
   c-sources:           cbits/homgb-xkb.c
+                       cbits/homgb-tray-embed.c
   cxx-sources:         cbits/homgb-imgui-sdl3.cpp
                       , vendor/imgui/backends/imgui_impl_sdl3.cpp
   cxx-options:         -std=c++11 -DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"

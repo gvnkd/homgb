@@ -32,7 +32,7 @@ import StatusNotifier.Host.Service (ItemInfo(..))
 import DearImGui hiding (image, begin, w)
 import qualified DearImGui.Raw as Raw
   (imageButton, begin, setNextWindowPos, setNextWindowSize, pushStyleColor
-  , pushStyleVar, popStyleVar, getMousePos)
+  , pushStyleVar, popStyleVar, getMousePos, dummy)
 import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
   ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
@@ -44,6 +44,7 @@ import Homgb.GL.Texture
 import Homgb.Keyboard (KeyboardEnv(..), currentLayout, pollGroup, rotateLayout)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
+import Homgb.Tray.Embed (XEmbedIcon, pumpEmbedEvents, layoutEmbedIcons)
 import Homgb.Tray.Icons (iconRgbaSrc)
 import Homgb.Tray.Menu.Render (openItemMenu)
 
@@ -70,6 +71,21 @@ dbgPassive state visible = do
               , let t = iconTitle (tiInfo i) ]
       ++ " shown=" ++ show (length visible)
     Nothing -> return ()
+
+-- | Drain XEmbed dock/undock events and move docked icon slots to
+-- their row positions. No-op unless tray.xembed is on and the
+-- selection was acquired.
+pumpEmbeds :: TrayEnv -> Config -> (Int -> (Int, Int, Int)) -> IO ()
+pumpEmbeds env config slotPos =
+  when (configTrayXEmbed config) $ do
+    mHost <- readTVarIO (trayXEmbedHost env)
+    forM_ mHost $ \host -> pumpEmbedEvents host (trayXEmbed env) slotPos
+
+placeEmbeds :: TrayEnv -> Config -> (Int -> (Int, Int, Int)) -> IO ()
+placeEmbeds env config slotPos =
+  when (configTrayXEmbed config) $ do
+    mHost <- readTVarIO (trayXEmbedHost env)
+    forM_ mHost $ \host -> layoutEmbedIcons host (trayXEmbed env) slotPos
 
 -- | Hover tooltip handoff: while the LAST item/widget is hovered,
 -- refresh the pending-tooltip state (the tooltip SURFACE picks it up
@@ -130,9 +146,13 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
     Nothing -> return ()
   let items = filter (keepItem config) (trayItems state)
   dbgPassive state items
+  embeds <- if configTrayXEmbed config
+    then readTVarIO (trayXEmbed env)
+    else return []
   let iconSize = fromIntegral (thTrayIconSize theme)
       traySpacing = fromIntegral (thTraySpacing theme)
       btn = iconSize + 6
+      nAll = length items + length embeds
       pos = ImVec2 0 0
       pivot = ImVec2 0 0
       trayFlags = foldl1 combineFlags
@@ -172,8 +192,16 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
             when (idx > 0) $ sameLineS traySpacing
             renderItem env textures theme iconSize btn traySpacing idx item surfSize
               winPos screenSize
+          -- reserve layout space for docked XEmbed icons; the
+          -- foreign windows themselves draw on top
+          let itemW' = btn + 2 * framePadX
+          forM_ (zip [0 :: Int ..] embeds) $ \(idx, _) -> do
+            if idx == (0 :: Int) && null items && barW0 > 0
+              then sameLineS barItemGap
+              else sameLineS traySpacing
+            withImVec2 (ImVec2 itemW' btn) $ \szPtr -> Raw.dummy szPtr
           kbW0 <- renderIndicator env kbEnv (configKbIndicator config)
-            traySpacing mainFont btn (not (null items)) winPos
+            traySpacing mainFont btn (nAll > 0) winPos
           return (kbW0, barW0)
         else return (0, 0)
       end
@@ -188,7 +216,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
   -- (text width + 2*framePadding). FramePadding (4,4) is the default
   -- style; pixel-probed via the 44px item pitch (28 btn + 8 padding +
   -- 8 old ItemSpacing).
-  let n = length items
+  let n = length items + length embeds
       gaps = fromIntegral (max 0 (n - 1)) * traySpacing
       gapKb = if n > 0 && kbW > 0 then traySpacing else 0
       gapBar = if n > 0 && barW > 0 then barItemGap else 0
@@ -196,6 +224,18 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
       trayW = 2 * thTrayPadX theme + barW + gapBar
         + fromIntegral n * itemW + gaps + gapKb + kbW
       h = btn + 2 * framePadY + 2 * thTrayPadY theme
+  -- XEmbed icon slots: the foreign windows are children of the tray
+  -- surface; position them where the dummy reservations landed
+  let slotPos :: Int -> (Int, Int, Int)
+      slotPos i =
+        ( floor (thTrayPadX theme)
+            + (if barW > 0 then floor barW + floor barItemGap else 0)
+            + (length items + i) * (floor itemW + floor traySpacing)
+            + floor framePadX
+        , floor (thTrayPadY theme) + floor framePadY
+        , floor btn )
+  pumpEmbeds env config slotPos
+  placeEmbeds env config slotPos
   return (trayW, h)
   where
     barItemGap = 12
@@ -215,6 +255,9 @@ renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
 renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               winPos screenSize@(monW, _) = do
   state <- readTVarIO (trayState env)
+  embeds <- if configTrayXEmbed config
+    then readTVarIO (trayXEmbed env)
+    else return []
   let items = filter (keepItem config) (trayItems state)
   dbgPassive state items
   let iconSize = fromIntegral (thTrayIconSize theme)
@@ -237,7 +280,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
   -- flexible: it takes its natural (char-capped) width, shrunk into
   -- whatever space remains after the fixed sections — a long title
   -- eats the spacer region before truncating.
-  sects <- measureSections items btn traySpacing
+  sects <- measureSections items (length embeds) btn traySpacing
   let leftW = sectionSum (slLeft sects)
       rightW = sectionSum (slRight sects)
       spacerW = max 0 (fromIntegral monW - 2 * thTrayPadX theme
@@ -260,10 +303,21 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
         $ \label -> Raw.begin label Nothing (Just trayFlags)
       when beginVisible $
         renderRow env textures config theme kbEnv mainFont mBar items
-          iconSize btn traySpacing sects spacerW surfSize winPos screenSize
+          embeds iconSize btn traySpacing sects spacerW surfSize winPos screenSize
       end
       Raw.popStyleVar 1
       popStyleColor 1
+  -- move XEmbed icon slots to their right-group positions
+  let rightX0 = fromIntegral monW - thTrayPadX theme - sectionSum (slRight sects)
+      itemW = btn + 2 * framePadX
+      slotPos :: Int -> (Int, Int, Int)
+      slotPos i =
+        ( floor rightX0 + (length items + i) * (floor itemW + floor traySpacing)
+            + floor framePadX
+        , floor (thTrayPadY theme) + floor framePadY
+        , floor btn )
+  pumpEmbeds env config slotPos
+  placeEmbeds env config slotPos
   return (fromIntegral monW, btn + 2 * framePadY + 2 * thTrayPadY theme)
   where
     gap = fromIntegral (thTraySpacing theme)
@@ -271,7 +325,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
     -- Measure-only (no drawing): this runs before Begin. The title
     -- width is computed LAST: natural char-capped width clamped into
     -- the space left by the fixed sections.
-    measureSections items btn traySpacing = do
+    measureSections items nEmbed btn traySpacing = do
       wsW <- case mBar of
         Just barT -> measureWorkspaces barT config traySpacing
         Nothing -> return 0
@@ -289,7 +343,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               ImVec2 tw _ <- calcTextSize capped True 0
               return tw
         Nothing -> return 0
-      let n = length items
+      let n = length items + nEmbed
           iconsW = if n == 0 then 0
             else fromIntegral n * (btn + 2 * framePadX)
                    + fromIntegral (n - 1) * traySpacing
@@ -342,9 +396,10 @@ data SectionLayout = SectionLayout
 -- indicator, clock, date).
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
           -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
-          -> [TrayItem] -> Float -> Float -> Float -> SectionLayout -> Float
+          -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
+          -> SectionLayout -> Float
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
-renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
+renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize btn
           traySpacing sects spacerW surfSize winPos screenSize = do
   let secFlag i = maybe False fst (atSec i)
       atSec i =
@@ -386,11 +441,17 @@ renderRow env textures config theme kbEnv mainFont mBar items iconSize btn
   -- the h-spacer: pushes the right group to the right edge
   when (wsRendered || titleRendered || winRendered) $
     sameLineS spacerW
-  let n = length items
+  let n = length items + length embeds
   forM_ (zip [0 :: Int ..] items) $ \(idx, item) -> do
     when (idx > 0) $ sameLineS traySpacing
     renderItem env textures theme iconSize btn traySpacing idx item surfSize
       winPos screenSize
+  -- reserve layout space for docked XEmbed icons (the foreign
+  -- windows draw on top of the reservations)
+  let itemW = btn + 2 * framePadX
+  forM_ (zip [0 :: Int ..] embeds) $ \(idx, _) -> do
+    when (idx > 0 || not (null items)) $ sameLineS traySpacing
+    withImVec2 (ImVec2 itemW btn) $ \szPtr -> Raw.dummy szPtr
   _ <- renderIndicator env kbEnv (configKbIndicator config) traySpacing
          mainFont btn (n > 0 || wsRendered || titleRendered || winRendered)
          winPos
