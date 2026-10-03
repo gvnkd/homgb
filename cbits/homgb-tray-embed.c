@@ -14,6 +14,15 @@
 
 static Atom a_opcode, a_manager, a_visual, a_orient, a_xembed, a_tray_sel;
 
+/* Docked icon windows are created on _NET_SYSTEM_TRAY_VISUAL (the
+ * tray window's visual — e.g. Telegram/Qt read the property and
+ * create a 32-bit ARGB icon). A slot MUST use that same visual:
+ * reparenting across depths is a BadMatch, which is exactly what the
+ * laptop repro showed (request code 7, repeated dock failures). */
+static Visual *g_visual = NULL;
+static int g_depth = 0;
+static Colormap g_cmap = None;
+
 static void intern_atoms(Display *dpy, int screen) {
   char selname[64];
   a_opcode = XInternAtom(dpy, "_NET_SYSTEM_TRAY_OPCODE", False);
@@ -90,6 +99,14 @@ int homgb_xembed_acquire(Display *dpy, Window parent, int screen,
   /* dock requests arrive as ClientMessages sent with the
    * StructureNotifyMask bit */
   XSelectInput(dpy, owner, StructureNotifyMask);
+  {
+    XWindowAttributes pattr;
+    if (XGetWindowAttributes(dpy, parent, &pattr) != 0) {
+      g_visual = pattr.visual;
+      g_depth = pattr.depth;
+      g_cmap = XCreateColormap(dpy, parent, g_visual, AllocNone);
+    }
+  }
   *owner_out = owner;
   *ts_out = ts;
   XFlush(dpy);
@@ -117,7 +134,18 @@ unsigned long homgb_window_visualid(Display *dpy, Window w) {
  * Returns the slot window. */
 Window homgb_xembed_dock(Display *dpy, Window parent, Window client,
                          int x, int y, int size, long ts) {
-  Window slot = XCreateSimpleWindow(dpy, parent, x, y, size, size, 0, 0, 0);
+  Window slot;
+  if (g_visual) {
+    XSetWindowAttributes a;
+    a.colormap = g_cmap;
+    a.background_pixel = 0;
+    a.border_pixel = 0;
+    slot = XCreateWindow(dpy, parent, x, y, size, size, 0, g_depth,
+                         InputOutput, g_visual,
+                         CWColormap | CWBackPixel | CWBorderPixel, &a);
+  } else {
+    slot = XCreateSimpleWindow(dpy, parent, x, y, size, size, 0, 0, 0);
+  }
   XSelectInput(dpy, slot, SubstructureNotifyMask);
   XReparentWindow(dpy, client, slot, 0, 0);
   XMapWindow(dpy, slot);
