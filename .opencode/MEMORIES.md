@@ -102,6 +102,16 @@
   * Test client: /tmp/opencode/xembed-test.c (gcc -lX11); watch
     MANAGER on root with StructureNotifyMask, recreate the window on
     DestroyNotify.
+- ImGui auto-fit (AlwaysAutoResize) windows are CLAMPED to the
+  viewport: a surface that hugs such a window FEEDBACK-DEADLOCKS
+  (window can't outgrow the surface, surface waits on the window),
+  and fixed-size surfaces clip tall/wide content. Size analytically
+  (font line height + char-count) and setNextWindowSize explicitly
+  (axis 0 = auto-fit the other axis does NOT dodge the clamp).
+  calcTextSize SIGSEGVed (in ImGui::FindRenderedTextEnd) on
+  dbusmenu-parsed label Texts — plain valid ASCII, unresolved; label
+  WIDTHS now use char-count estimates; calcTextSize on string
+  literals/constructed Text is fine everywhere else.
 
 X11 notification daemon + StatusNotifierItem tray host + keyboard layout manager.
 SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
