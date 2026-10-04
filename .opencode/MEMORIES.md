@@ -191,6 +191,18 @@
   probe now; ydotool: buttons are HEX masks, left click = C0, right
   = C1, plain numbers are button INDICES (click 2 = middle!). wev
   prints nothing until hovered — empty log ≠ broken events).
+- DBUSMENU EVENT VARIANT (2026-10-04, homgb 7b5991d): the Event data
+  arg must be a VARIANT on the wire — Event(iisvu), not isuu. dbus-
+  haskell toVariant makes a plain value; force it with
+  Variant (ValueVariant (toVariant v)) (constructors from
+  DBus.Internal.Types; `import DBus hiding (Variant)` to avoid the
+  type-only export clash). steam silently ignored the malformed
+  Event — item clicks no-op'd including Exit. Verified: steam exits.
+  Debug recipe that cracked it: ydotool pointer hops (absolute move
+  onto the bar saturates right-edge due to pointer accel; then TWO
+  probed relative hops), HOMGB_PTRDEBUG probe (SDL reads local coords
+  of the hovered surface), click, watch busctl monitor for the call
+  + compare with a manual busctl call using the correct signature.
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —
