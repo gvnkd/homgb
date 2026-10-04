@@ -68,6 +68,45 @@
   watchdog: 3s after a successful build, if the watcher's
   RegisteredStatusNotifierItems outnumber our tray items, rebuild
   the host (a fresh build replays the full map).
+- SNI unread-badge rework (2026-10-04, fixes "chat app icons never get
+  the red dot"): THREE bugs. (1) `applyUpdate` bumped tiVersion but
+  kept the STALE ItemInfo — NewIcon re-resolved the old pixmap/name
+  forever (Slack/chromium badges the pixmap in place). Now stores the
+  fresh info (pure fn, exported for repl tests). (2) StatusUpdated was
+  ignored (no wake, no re-render); now bumps + refetches. (3) The
+  status-notifier-item host NEVER reads AttentionIconName/Pixmap and
+  never registers NewAttentionIcon — homgb fetches them itself
+  (Homgb.Tray.Icons.fetchAttentionIcon, dbus DISPATCHER thread only,
+  cached in TrayItem.tiAttention) and registers
+  I.registerForNewAttentionIcon in runHost. Raw client pixmaps are
+  network order (A,R,G,B → argbToRgba); attention icon REPLACES the
+  normal icon while NeedsAttention (KDE semantics, no overlay on top).
+  Overlay icons (the other badge channel) are composited top-left at
+  2/5 height (gtk-sni-tray geometry) by addOverlay (pure nearest-
+  neighbor scale + src-over blend, blendOver/scaleToHeight exported).
+- SNI PIXMAP BYTE ORDER — the old memory note was WRONG: the host
+  lib's networkToSystemByteOrder (0.3.2.16, StatusNotifier.Util) maps
+  [A,R,G,B] → 0xAABBGGRR word → R,G,B,A bytes on LE. Host-delivered
+  pixmaps are RGBA AS-IS; homgb's bgraToRgba double-swapped R↔B.
+  Invisible for years because every real icon (flameshot purple, steam
+  white, slack mono) is R≈B symmetric — caught by a pure-blue test
+  pixmap rendering red. pixmapRgba/overlayRgba now pass bytes through.
+- Watcher restart kills CHROMIUM SNI registrations permanently
+  (Slack/chrome_status_icon don't monitor for new watchers — the
+  gtk-sni-tray README warns about exactly this); flameshot
+  re-registers. Restarting homgb loses Slack's SNI item until Slack
+  restarts. Telegram (flatpak xdg-dbus-proxy) exposes NO SNI object at
+  all — XEmbed only.
+- Synthetic SNI item testing recipe: raw DBus exports + timer/file-
+  driven phase switches (pixmap badge + NewIcon = Slack style;
+  NeedsAttention + AttentionIconPixmap = Discord style; overlay). TWO
+  gotchas: (1) readOnlyProperty takes the raw IO value — wrapping in
+  toVariant DOUBLE-WRAPS (busctl shows `v s "x"` instead of `s "x"`)
+  and the generated client fails every property with
+  org.ClientTypeMismatch (ItemInfo all defaults: iconName=bus name,
+  pixmaps=[], status=Nothing); (2) pgrep/pkill -f with a pattern that
+  appears in your own zsh -c command line kills YOUR shell — use the
+  [e] bracket trick.
 - XEmbed tray host (tray.xembed, Homgb.Tray.Embed +
   cbits/homgb-tray-embed.c): homgb owns _NET_SYSTEM_TRAY_S0, sends
   the ICCCM MANAGER ClientMessage (ICCCM 2.8) so running apps dock

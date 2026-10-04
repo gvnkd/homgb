@@ -46,7 +46,7 @@ import Homgb.Keyboard (KeyboardEnv(..), currentLayout, rotateLayout)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
 import Homgb.Tray.Embed (XEmbedIcon, pumpEmbedEvents, layoutEmbedIcons)
-import Homgb.Tray.Icons (iconRgbaSrc)
+import Homgb.Tray.Icons (iconRgbaSrc, orElseIO, attentionRgba, addOverlay)
 import Homgb.Tray.Menu.Render (openItemMenu)
 
 -- | Tray icon texture cache: bus name -> (version, texture).
@@ -663,6 +663,11 @@ tiStatus :: TrayItem -> Maybe String
 tiStatus = itemStatus . tiInfo
 
 -- | Upload (or fetch cached) tray icon texture for an item.
+-- Resolution order: the item's attention icon while
+-- Status=NeedsAttention (fetched ahead of time on the dbus thread),
+-- then the normal icon chain, then the overlay icon composited
+-- top-left (SNI's two badge channels: chat apps use one or the other
+-- for their unread dot).
 trayTexture :: TrayTextures -> Int -> TrayItem -> IO (Maybe GLuint)
 trayTexture textures iconSz item = do
   cache <- readTVarIO textures
@@ -670,7 +675,7 @@ trayTexture textures iconSz item = do
   case Map.lookup key cache of
     Just (v, tex) | v == tiVersion item -> return tex
     _ -> do
-      mRgba <- iconRgbaSrc iconSz (tiInfo item)
+      mRgba <- resolveItemIcon iconSz item
       mTex <- traverse uploadRgba (fmap snd mRgba)
       -- drop the stale texture after the new one is up
       case Map.lookup key cache of
@@ -684,12 +689,30 @@ trayTexture textures iconSz item = do
               pixDims = [ (w, h) | (w, h, _) <- iconPixmaps info ]
           hPutStrLn stderr $ "tray icon " ++ key
             ++ " name=" ++ show (iconName info)
+            ++ " status=" ++ show (itemStatus info)
+            ++ " attention=" ++ show (fmap (const ()) (tiAttention item))
             ++ " themePath=" ++ show (iconThemePath info)
             ++ " pixmaps=" ++ show pixDims
             ++ " -> " ++ maybe "FAIL" (\(src, SizedRgba w h _) ->
                  src ++ " " ++ show w ++ "x" ++ show h) mRgba
         Nothing -> return ()
       return mTex
+
+resolveItemIcon :: Int -> TrayItem -> IO (Maybe (String, SizedRgba))
+resolveItemIcon iconSz item = do
+  mAttentionResolved <- case tiAttention item of
+    Just att | itemStatus info == Just "NeedsAttention" ->
+      attentionRgba iconSz (iconThemePath info) att
+    _ -> return Nothing
+  case mAttentionResolved of
+    -- KDE semantics: the attention icon REPLACES the normal one —
+    -- no overlay compositing on top of it
+    Just _ -> return mAttentionResolved
+    Nothing -> do
+      mBase <- iconRgbaSrc iconSz info
+      traverse (addOverlay iconSz info) mBase
+  where
+    info = tiInfo item
 
 withImVec2 :: ImVec2 -> (Ptr ImVec2 -> IO a) -> IO a
 withImVec2 v f = alloca $ \p -> poke p v >> f p

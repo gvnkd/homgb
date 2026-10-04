@@ -8,6 +8,7 @@ module Homgb.Tray
   , TooltipInfo(..)
   , startTray
   , reapZombieItems
+  , applyUpdate
   ) where
 
 import Control.Concurrent (forkIO, threadDelay)
@@ -16,6 +17,7 @@ import Control.Concurrent.STM.TVar
 import Control.Exception (catch, IOException)
 import Control.Monad (filterM, forM_, unless, void, when)
 import Data.List (isPrefixOf, sort)
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Data.Text as T
@@ -25,21 +27,28 @@ import Graphics.X11.Xlib.Display (openDisplay)
 import System.IO (hPutStrLn, stderr)
 
 import DBus
-import DBus.Client (Client, call, connectSession)
+import DBus.Client (Client, call, connectSession, matchAny)
 import DBus.Internal.Types (BusName(..))
 import qualified StatusNotifier.Host.Service as SHost
 import StatusNotifier.Host.Service (UpdateType(..), ItemInfo, itemServiceName)
+import qualified StatusNotifier.Item.Client as I
 import qualified StatusNotifier.Watcher.Client as Watcher
 
 import Homgb.Tray.Embed (EmbedState, XEmbedIcon)
+import Homgb.Tray.Icons (AttentionIcon, fetchAttentionIcon)
 import Homgb.Tray.Menu.Render (Menus, newMenus)
 import Homgb.WMProps (installErrorHandler)
 
 -- | One tray entry. tiVersion bumps whenever the host reports an
 -- icon-affecting change so the renderer re-uploads the GL texture.
+-- tiAttention caches the item's AttentionIcon (fetched on the dbus
+-- thread — the status-notifier-item host library never reads those
+-- properties): the renderer swaps it in while Status=NeedsAttention
+-- (chat apps' unread/mention dot).
 data TrayItem = TrayItem
   { tiInfo :: ItemInfo
   , tiVersion :: Int
+  , tiAttention :: Maybe AttentionIcon
   }
 
 data TrayState = TrayState
@@ -159,7 +168,15 @@ runHost wake tState client = go (10 :: Int)
           threadDelay 1000000
           go (n - 1)
         Just host -> do
-          _ <- SHost.addUpdateHandler host (updateHandler wake tState)
+          _ <- SHost.addUpdateHandler host (updateHandler client wake tState)
+          -- the host library ignores NewAttentionIcon signals; apps
+          -- that swap their attention icon without a Status change
+          -- (rare, but spec-legal) still need a texture invalidation
+          _ <- I.registerForNewAttentionIcon client matchAny
+            (\sig -> forM_ (signalSender sig)
+              (refreshAttention client wake tState))
+            (\sig -> hPutStrLn stderr
+              ("tray: NewAttentionIcon handler error: " ++ show sig))
           hPutStrLn stderr "tray: SNI host started"
           -- The host can silently miss items that re-registered in
           -- the window between the watcher name appearing and the
@@ -206,38 +223,89 @@ runHost wake tState client = go (10 :: Int)
 -- progress in its TOOLTIP) emit a steady stream of Tooltip/Title
 -- updates that homgb does not render — waking per update was another
 -- constant-CPU-at-idle source.
-updateHandler :: IO () -> TVar TrayState -> SHost.UpdateHandler
-updateHandler wake tState updateType info = do
+--
+-- Attention-icon fetch happens HERE (dispatcher thread), never on the
+-- render thread: the status-notifier-item host does not read
+-- AttentionIcon* properties, so we fetch them ourselves whenever an
+-- item appears or its Status changes.
+updateHandler :: Client -> IO () -> TVar TrayState -> SHost.UpdateHandler
+updateHandler client wake tState updateType info = do
+  mAttention <- case updateType of
+    ItemAdded -> Just <$> fetchAttentionIcon client info
+    StatusUpdated -> do
+      s <- readTVarIO tState
+      let tracked = any ((== name) . itemServiceName . tiInfo) (trayItems s)
+      if tracked then Just <$> fetchAttentionIcon client info
+        else return Nothing
+    _ -> return Nothing
   changed <- atomically $ do
     s <- readTVar tState
-    let (s', changed') = applyUpdate updateType info s
+    let (s', changed') = applyUpdate mAttention updateType info s
     writeTVar tState s'
     return changed'
   when changed wake
+  where
+    name = itemServiceName info
 
-applyUpdate :: UpdateType -> ItemInfo -> TrayState -> (TrayState, Bool)
-applyUpdate updateType info s =
-  let name = itemServiceName info
-      items = trayItems s
-      bump item = item { tiVersion = trayVersion s + 1 }
-  in case updateType of
+-- | NewAttentionIcon signals bypass the host library entirely (it
+-- never registers for them): refetch the sender's attention icon and
+-- bump its version so the renderer re-resolves the texture.
+refreshAttention :: Client -> IO () -> TVar TrayState -> BusName -> IO ()
+refreshAttention client wake tState name = do
+  s <- readTVarIO tState
+  case [ tiInfo i | i <- trayItems s, itemServiceName (tiInfo i) == name ] of
+    [] -> return ()
+    (info:_) -> do
+      att <- fetchAttentionIcon client info
+      changed <- atomically $ do
+        st <- readTVar tState
+        let (st', c) = bumpMatching (\i -> i { tiAttention = att }) name st
+        writeTVar tState st'
+        return c
+      when changed wake
+
+-- | The first argument is the attention-icon override for the item:
+-- 'Nothing' keeps the stored one, @'Just' a@ replaces it (ItemAdded /
+-- StatusUpdated refetch; icon-only updates keep it).
+applyUpdate :: Maybe (Maybe AttentionIcon) -> UpdateType -> ItemInfo
+            -> TrayState -> (TrayState, Bool)
+applyUpdate mAttention updateType info s =
+  case updateType of
     ItemAdded ->
-      ( s { trayItems = items ++ [TrayItem info (trayVersion s + 1)]
+      ( s { trayItems = items ++ [TrayItem info (trayVersion s + 1)
+                                    (fromMaybe Nothing mAttention)]
           , trayVersion = trayVersion s + 1 }
       , True )
     ItemRemoved ->
       let remaining = filter (\i -> itemServiceName (tiInfo i) /= name) items
       in (s { trayItems = remaining }, length remaining /= length items)
-    IconUpdated -> updateMatching s items name bump
-    OverlayIconUpdated -> updateMatching s items name bump
+    -- store the FRESH ItemInfo: bumping the version while keeping the
+    -- old record re-resolved the stale icon (the "new message doesn't
+    -- change the icon" bug)
+    IconUpdated -> bumpMatching (\i -> i { tiInfo = info }) name s
+    OverlayIconUpdated -> bumpMatching (\i -> i { tiInfo = info }) name s
+    StatusUpdated -> bumpMatching (setAtt . (\i -> i { tiInfo = info }))
+                       name s
     _ -> (s, False)
   where
-    updateMatching s' items' name' f =
-      let (matched, out) = foldr
-            (\i (m, acc) -> if itemServiceName (tiInfo i) == name'
-                              then (True, f i : acc)
-                              else (m, i : acc))
-            (False, []) items'
-      in ( s' { trayItems = out, trayVersion = trayVersion s' + 1 }
-         , matched )
+    name = itemServiceName info
+    items = trayItems s
+    setAtt i = case mAttention of
+      Just a -> i { tiAttention = a }
+      Nothing -> i
+
+-- | Bump the version of every item matching a bus name (texture cache
+-- invalidation) and apply @f@ to it. Version bumps even when nothing
+-- matched: harmless, and keeps the counter monotonic.
+bumpMatching :: (TrayItem -> TrayItem) -> BusName -> TrayState
+             -> (TrayState, Bool)
+bumpMatching f name s =
+  let (matched, out) = foldr
+        (\i (m, acc) ->
+           if itemServiceName (tiInfo i) == name
+             then (True, (f i) { tiVersion = trayVersion s + 1 } : acc)
+             else (m, i : acc))
+        (False, []) (trayItems s)
+  in ( s { trayItems = out, trayVersion = trayVersion s + 1 }
+     , matched )
  

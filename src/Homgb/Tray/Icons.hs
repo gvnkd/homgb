@@ -1,9 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Homgb.Tray.Icons (iconRgba, iconRgbaSrc) where
+module Homgb.Tray.Icons
+  ( iconRgba
+  , iconRgbaSrc
+  , orElseIO
+  , AttentionIcon(..)
+  , fetchAttentionIcon
+  , attentionRgba
+  , addOverlay
+  , scaleToHeight
+  , blendOver
+  ) where
 
-import Control.Exception (catch, IOException, try)
+import Control.Exception (catch, IOException, try, SomeException)
 import Control.Monad (filterM, forM)
 import Data.Char (toLower)
 import Data.Int (Int32)
@@ -21,7 +31,9 @@ import System.Process (createProcess, proc, std_out, StdStream(..), waitForProce
 import Codec.Picture
 import Codec.Picture.Types (promoteImage)
 
-
+import DBus.Client (Client)
+import DBus.Internal.Message (MethodError)
+import qualified StatusNotifier.Item.Client as I
 
 import StatusNotifier.Host.Service (ItemInfo(..))
 
@@ -51,16 +63,18 @@ orElseIO a b = do
     Just _ -> return ra
     Nothing -> b
 
--- | Pixmaps come from the host in host byte order: on little-endian
--- B,G,R,A per pixel.
+-- | Pixmaps come from the host library already converted with
+-- 'networkToSystemByteOrder': ARGB network bytes -> 0xAABBGGRR word
+-- -> R,G,B,A in memory on little-endian. They are RGBA as-is — do
+-- NOT byte-swap them (the old bgraToRgba call double-swapped, only
+-- invisible because every icon in the wild was R~B symmetric).
 pixmapRgba :: Int -> ItemInfo -> IO (Maybe SizedRgba)
 pixmapRgba size info =
   case pickClosest size (iconPixmaps info) of
     Just (w, h, bs)
       | w > 0 && h > 0
       , BS.length bs >= fromIntegral (w * h * 4) ->
-          return $ Just $ SizedRgba (fromIntegral w) (fromIntegral h)
-                        (bgraToRgba bs)
+          return $ Just $ SizedRgba (fromIntegral w) (fromIntegral h) bs
     _ -> return Nothing
 
 pickClosest :: Int -> [(Int32, Int32, BS.ByteString)] -> Maybe (Int32, Int32, BS.ByteString)
@@ -212,3 +226,132 @@ dynToRgba :: DynamicImage -> Maybe (Image PixelRGBA8)
 dynToRgba (ImageRGBA8 i) = Just i
 dynToRgba (ImageRGB8 i) = Just (promoteImage i)
 dynToRgba _ = Nothing
+
+-- | The SNI spec's unread/mention badge channel: apps set
+-- @Status=NeedsAttention@ plus @AttentionIconName@/@AttentionIconPixmap@
+-- (chat apps put their red dot there). The status-notifier-item host
+-- library never reads those properties, so we fetch them ourselves on
+-- the dbus dispatcher thread (NEVER the render thread) and stash the
+-- result in the 'TrayItem'.
+data AttentionIcon
+  = AttentionPixmaps [(Int32, Int32, BS.ByteString)]
+    -- ^ raw client-side pixmaps: NETWORK byte order (A,R,G,B)
+  | AttentionName String
+  deriving (Eq, Show)
+
+-- | Fetch the attention icon for an item, or 'Nothing' when the item
+-- is not in @NeedsAttention@ (or exposes no attention icon). Safe to
+-- call from dbus callbacks: the getters are ordinary method calls.
+fetchAttentionIcon :: Client -> ItemInfo -> IO (Maybe AttentionIcon)
+fetchAttentionIcon client info
+  | itemStatus info /= Just "NeedsAttention" = return Nothing
+  | otherwise = do
+      ePix <- try (I.getAttentionIconPixmap client name path)
+      case [ (w, h, bs)
+           | Right (Right ps) <- [ePix :: Either SomeException
+                                    (Either MethodError [(Int32, Int32, BS.ByteString)])]
+           , (w, h, bs) <- ps
+           , w > 0, h > 0
+           , BS.length bs >= fromIntegral (w * h * 4) ] of
+        (p:_) -> return (Just (AttentionPixmaps [p]))
+        [] -> do
+          eName <- try (I.getAttentionIconName client name path)
+          case eName :: Either SomeException (Either MethodError String) of
+            Right (Right nm) | not (null nm) ->
+              return (Just (AttentionName nm))
+            _ -> return Nothing
+  where
+    name = itemServiceName info
+    path = itemServicePath info
+
+-- | Resolve an attention icon to RGBA pixels (same fallback chain as
+-- the normal icon: pixmap, theme path, freedesktop theme).
+attentionRgba :: Int -> Maybe String -> AttentionIcon
+              -> IO (Maybe (String, SizedRgba))
+attentionRgba size mThemePath att =
+  case att of
+    AttentionPixmaps ps ->
+      return $ case pickClosest size ps of
+        Just (w, h, bs)
+          | w > 0 && h > 0
+          , BS.length bs >= fromIntegral (w * h * 4) ->
+              Just ("attention-pixmap", SizedRgba (fromIntegral w)
+                       (fromIntegral h) (argbToRgba bs))
+        _ -> Nothing
+    AttentionName nm ->
+          tag "attention-path" (pathRgba size nm mThemePath)
+      `orElseIO` tag "attention-theme" (themeRgba size nm)
+  where
+    tag s m = fmap ((,) s) <$> m
+
+-- | Composite the item's overlay icon (top-left, scaled to 2/5 of the
+-- base — gtk-sni-tray's geometry) onto the resolved base image. The
+-- host library already tracks @OverlayIconPixmap@/@OverlayIconName@;
+-- apps that badge via overlay instead of attention icon get their dot
+-- this way.
+addOverlay :: Int -> ItemInfo -> (String, SizedRgba)
+           -> IO (String, SizedRgba)
+addOverlay _ info (src, base@(SizedRgba _ bh _)) = do
+  mOverlay <- overlayRgba oSize info
+  case mOverlay of
+    Nothing -> return (src, base)
+    Just ov -> return (src ++ "+overlay", blendOver 0 0 (scaleToHeight oSize ov) base)
+  where
+    oSize = max 1 (bh * 2 `div` 5)
+
+overlayRgba :: Int -> ItemInfo -> IO (Maybe SizedRgba)
+overlayRgba size info =
+      pixmapOverlay
+  `orElseIO` nameOverlay
+  where
+    pixmapOverlay =
+      return $ case pickClosest size (overlayIconPixmaps info) of
+        Just (w, h, bs)
+          | w > 0 && h > 0
+          , BS.length bs >= fromIntegral (w * h * 4) ->
+              -- host-library-converted: already RGBA (see pixmapRgba)
+              Just $ SizedRgba (fromIntegral w) (fromIntegral h) bs
+        _ -> Nothing
+    nameOverlay = case overlayIconName info of
+      Just nm ->
+            pathRgba size nm (iconThemePath info)
+        `orElseIO` themeRgba size nm
+      Nothing -> return Nothing
+
+-- | Nearest-neighbor scale preserving aspect ratio; the target is the
+-- new HEIGHT (icons are square in practice).
+scaleToHeight :: Int -> SizedRgba -> SizedRgba
+scaleToHeight targetH (SizedRgba w h dat)
+  | h == targetH = SizedRgba w h dat
+  | h <= 0 || w <= 0 = SizedRgba w h dat
+  | otherwise = SizedRgba w' targetH (BS.pack out)
+  where
+    w' = max 1 (round (fromIntegral w * fromIntegral targetH
+                       / fromIntegral h :: Double))
+    n = w' * targetH
+    srcPx x y = BS.take 4 (BS.drop ((y * w + x) * 4) dat)
+    out = concat [ BS.unpack (srcPx (x * w `div` w') (y * h `div` targetH))
+                 | i <- [0 .. n - 1]
+                 , let (y, x) = i `divMod` w' ]
+
+-- | Alpha-blend (src-over) @src@ onto @dst@ at offset (ox, oy),
+-- clipped to dst bounds.
+blendOver :: Int -> Int -> SizedRgba -> SizedRgba -> SizedRgba
+blendOver ox oy (SizedRgba sw sh sd) (SizedRgba w h dd) =
+  SizedRgba w h (BS.pack (concatMap outPx [0 .. w * h - 1]))
+  where
+    inSrc x y = x >= ox && y >= oy && x < ox + sw && y < oy + sh
+    outPx px =
+      let (y, x) = px `divMod` w
+          dBase = px * 4
+          dCh c = fromIntegral (BS.index dd (dBase + c)) :: Int
+      in if not (inSrc x y)
+           then [ BS.index dd (dBase + c) | c <- [0 .. 3] ]
+           else let sBase = ((y - oy) * sw + (x - ox)) * 4
+                    sCh c = fromIntegral (BS.index sd (sBase + c)) :: Int
+                    sa = sCh 3
+                    over c = (sCh c * sa + dCh c * (255 - sa) + 127)
+                               `div` 255
+                    a = sa + (dCh 3 * (255 - sa) + 127) `div` 255
+                in map (fromIntegral . over) [0, 1, 2]
+                     ++ [fromIntegral a]
