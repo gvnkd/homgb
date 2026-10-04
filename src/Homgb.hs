@@ -212,9 +212,11 @@ mainLoop app = do
           then bkHideSurface (appBackend app) (surfacesTray (appSurfaces app))
           else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
         -- SNI hover tooltips: own TOOLTIP surface (in-window tooltips
-        -- clip against the bar viewport)
+        -- clip against the bar viewport). A menu takes precedence: the
+        -- tooltip surface would draw over the menu, so it must not
+        -- render while any menu is open.
         ttOpen <- anyTooltipOpen app
-        if ttOpen
+        if ttOpen && not menuOpen
           then drawOn (surfacesTooltip (appSurfaces app)) (drawTooltipSurface app)
           else bkHideSurface (appBackend app) (surfacesTooltip (appSurfaces app))
         -- swapWindow on a hidden SDL window maps it, so the popup
@@ -242,6 +244,12 @@ mainLoop app = do
     -- (sShown), so calling it on idle iterations is free.
     unless menuOpen $
       bkHideSurface (appBackend app) (surfacesMenus (appSurfaces app))
+    -- Same for the tooltip: menu-tick iterations skip the `changed`
+    -- block, so a tooltip that was up when the menu opened would stay
+    -- mapped over the menu. hideSurface is idempotent (sShown), so
+    -- this is free on ticks.
+    when menuOpen $
+      bkHideSurface (appBackend app) (surfacesTooltip (appSurfaces app))
     mainLoop app
 
 -- | Earliest time the loop must wake even with no events: the bar
