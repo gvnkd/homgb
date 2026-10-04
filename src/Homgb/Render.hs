@@ -39,9 +39,10 @@ import qualified DearImGui.Raw as Raw
   , setNextWindowSize, showMetricsWindow, separator
   , pushStyleVar)
 
-import Homgb.Backend (Backend, BarUpkeep(..), bkBarUpkeep, bkHideSurface
-  , bkPollPointer, bkShowSurface, bkUpdateStrut)
-import Homgb.Bar (barActiveWindow)
+import Homgb.Backend (Backend, BarUpkeep(..), bkBarActions, bkBarUpkeep
+  , bkHideSurface, bkMoveSurface, bkPollPointer, bkShowSurface
+  , bkUpdateStrut)
+import Homgb.Bar (BarSection(..), barActiveWindow)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
@@ -51,11 +52,10 @@ import Homgb.Notifications.Data
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
-  (Surface(..), Surfaces(..), moveSurfaceWindow
-  , resizeSurfaceWindow, surfaceWindowSize)
+  (Surface(..), Surfaces(..), resizeSurfaceWindow, surfaceWindowSize)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
 import Homgb.Tray (TrayEnv(..), TooltipInfo(..))
-import Homgb.Keyboard (pollGroup)
+import Homgb.Keyboard (kbUiPoll)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
 
@@ -107,7 +107,7 @@ frameUpkeep app = do
           Nothing -> return False
       else return False
   kbChanged <- case appKeyboard app of
-    Just kb -> pollGroup kb
+    Just kb -> kbUiPoll kb
     Nothing -> return False
   -- The bar state and the z-order re-assert are EVENT-DRIVEN:
   -- the backend's event listener (X11: root property/structure
@@ -167,14 +167,15 @@ drawTraySurface app = do
   (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config theme
     (appKeyboard app) (sMainFont surf)
     (if configBarWorkspaces config || configBarWindows config
-       then Just (appBar app) else Nothing)
+       then Just (BarSection (appBar app) (bkBarActions (appBackend app)))
+       else Nothing)
     (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
     winPos (monW mon, monH mon)
   if configBarLayout config
     then do
       -- full-width bar hugging the monitor's top edge
       resizeSurfaceWindow surf (monW mon) (floor h + 2)
-      moveSurfaceWindow surf (monX mon) (monY mon)
+      bkMoveSurface (appBackend app) surf (monX mon) (monY mon)
       updateStrut app surf mon (floor h + 2 + configBarStrutGap config)
     else do
       let (mx, my) = (monX mon, monY mon)
@@ -185,7 +186,7 @@ drawTraySurface app = do
             "bottom-right" -> (mx + mw - 10 - floor w, my + mh - 10 - floor h)
             _ -> (mx + mw - 10 - floor w, my + 10)
       resizeSurfaceWindow surf (floor w + 2) (floor h + 2)
-      moveSurfaceWindow surf x y
+      bkMoveSurface (appBackend app) surf x y
   debug <- lookupEnv "HOMGB_DEBUG"
   case debug of
     Just _ -> hPutStrLn stderr
@@ -255,7 +256,7 @@ drawPopupSurface app = do
       total <- go tState config surfX baseTop
                  (map idealX notis) (map rootTop notis) heights notis
       resizeSurfaceWindow surf surfW (floor total + 4)
-      moveSurfaceWindow surf surfX (monY mon + baseTop)
+      bkMoveSurface (appBackend app) surf surfX (monY mon + baseTop)
       debug <- lookupEnv "HOMGB_DEBUG"
       case debug of
         Just _ -> hPutStrLn stderr
@@ -330,7 +331,7 @@ drawMenusSurface app = do
       -- items looked "shrunk"). Resize AFTER show: xmonad restores a
       -- re-mapped float's geometry from its float map, discarding
       -- resizes that happened while withdrawn (popup pattern).
-      moveSurfaceWindow surf x y
+      bkMoveSurface (appBackend app) surf x y
       bkShowSurface (appBackend app) surf
       resizeSurfaceWindow surf (ceiling mw + 4) (ceiling mh + 4)
 
@@ -371,7 +372,7 @@ drawTooltipSurface app = do
       -- happened while the window was withdrawn (popup pattern)
       bkShowSurface (appBackend app) surf
       resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
-      moveSurfaceWindow surf x0 y0
+      bkMoveSurface (appBackend app) surf x0 y0
       withImVec4 (thMenuBg theme) $ \bgPtr ->
         withImVec4 (thMenuBorder theme) $ \borderPtr -> do
           Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
@@ -427,7 +428,7 @@ drawCenterSurface app = do
       y = monY mon + configBarHeight config
       h = monH mon - configBarHeight config - configBottomBarHeight config
   resizeSurfaceWindow surf width h
-  moveSurfaceWindow surf x y
+  bkMoveSurface (appBackend app) surf x y
   V2 surfW surfH <- surfaceWindowSize surf
   let winFlags = foldl1 combineFlags
         [ ImGuiWindowFlags_NoTitleBar

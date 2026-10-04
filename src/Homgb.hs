@@ -19,6 +19,7 @@ import Graphics.GL
 import Linear (V2(..))
 
 import System.Directory (doesFileExist, getXdgDirectory, XdgDirectory(..))
+import System.Environment (lookupEnv, setEnv)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 
@@ -28,9 +29,9 @@ import Homgb.Bar (barCovered)
 import Homgb.Backend (bkHideSurface, bkMonitors, bkName, bkScreenSize
   , bkShowSurface, bkStartBarEvents, bkStartEmbedHost, bkStartKeyboard
   , bkTagSurface)
-import Homgb.Backend.X11 (selectBackend)
+import Homgb.Backend.X11 (preferredBackend, selectBackend)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
-import Homgb.Keyboard (KeyboardEnv(..), LayoutState(..))
+import Homgb.Keyboard (KbUi(..), LayoutState(..))
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Notifications.Data (Notification(..))
 import Homgb.Render
@@ -44,6 +45,12 @@ import Homgb.WMProps (WmClass(..))
 
 run :: IO ()
 run = do
+  -- SDL prefers X11 when DISPLAY exists (XWayland on river sessions);
+  -- a Wayland backend decision must land BEFORE SDL_Init
+  pref <- preferredBackend
+  vdrv <- lookupEnv "SDL_VIDEODRIVER"
+  when (pref == Just "wayland" && vdrv == Nothing) $
+    setEnv "SDL_VIDEODRIVER" "wayland"
   SDL3.initializeVideo
   config <- loadConfig
   theme <- mkTheme config
@@ -54,7 +61,8 @@ run = do
   let wake = SDL3.pushWakeEvent userEv
   tState <- startNotificationDaemon config wake
   tray <- startTray wake
-  backend <- selectBackend (trayDisplay tray)
+  barDirty <- newTVarIO True
+  backend <- selectBackend (trayDisplay tray) barDirty wake
   hPutStrLn stderr $ "homgb: backend: " ++ bkName backend
   kb <- bkStartKeyboard backend config wake
   screen <- bkScreenSize backend
@@ -105,7 +113,7 @@ run = do
   SDL3.hideWindow (sWindow tooltipSurf)
   app <- initialAppState backend tState tray kb
     (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf) screen
-    monitors theme centerVisible userEv wake
+    monitors theme centerVisible barDirty userEv wake
   bkStartBarEvents backend (appBarDirty app) wake
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
@@ -123,6 +131,18 @@ run = do
       bkShowSurface backend traySurf
       mainLoop app
   SDL3.quitVideo
+
+debugEnv :: String -> [String] -> IO ()
+debugEnv fmt args = do
+  d <- lookupEnv "HOMGB_DEBUG"
+  case d of
+    Just _ -> hPutStrLn stderr (printf fmt args)
+    Nothing -> return ()
+  where
+    printf [] _ = []
+    printf ('%':'s':rest) (a:as) = a ++ printf rest as
+    printf (c:rest) as = c : printf rest as
+    printf _ _ = ""
 
 withSurfaceContext :: IO () -> Surface -> IO ()
 withSurfaceContext action surf = do
@@ -152,8 +172,13 @@ mainLoop app = do
   let waitMs = max 1 (ceiling ((deadline - now0) * 1000))
   (shouldQuit, sawEvents) <- SDL3.pumpEventsTimeout (appUserEvent app)
     (eventRoutes app) waitMs
+  debugEnv "mainloop: wake sawEvents=%s shouldQuit=%s"
+    [show sawEvents, show shouldQuit]
   unless shouldQuit $ do
     up <- frameUpkeep app
+    debugEnv "mainloop: upkeep expired=%s kb=%s bar=%s ptr=%s"
+      [show (upExpired up), show (upKbChanged up), show (upBarChanged up)
+      , show (upPointerMoved up)]
     state <- readTVarIO (appNotify app)
     let config = notiConfig state
         notis = notiStList state
@@ -233,7 +258,7 @@ nextDeadline app = do
   lastBar <- readTVarIO (appBarTick app)
   kbD <- case appKeyboard app of
     Just kb -> do
-      s <- readTVarIO (kbState kb)
+      s <- readTVarIO (kbUiState kb)
       return (realToFrac (utcTimeToPOSIXSeconds (lsQueriedAt s)) + 1)
     Nothing -> return far
   tipD <- do

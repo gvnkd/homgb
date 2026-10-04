@@ -19,6 +19,8 @@ module Homgb.Keyboard
   ( LayoutState(..)
   , KeyboardEnv(..)
   , PerAppState(..)
+  , KbUi(..)
+  , kbToUi
   , startKeyboard
   , currentLayout
   , pollGroup
@@ -60,6 +62,30 @@ data KeyboardEnv = KeyboardEnv
     -- (a connection is not thread-safe; each thread owns one)
   , kbPerApp :: Maybe PerAppState
     -- ^ Nothing when config keyboard.per-app is off
+  }
+
+-- | The UI-facing slice of the keyboard manager: what the tray
+-- indicator, the control interface and the per-app restore need.
+-- X11 projects 'KeyboardEnv' through 'kbToUi'; the Wayland backend
+-- builds one fed by the WM's LayoutChanged signal over dbus (per-app
+-- restore there is a no-op for now).
+data KbUi = KbUi
+  { kbUiState :: TVar LayoutState
+  , kbUiRotate :: IO ()
+    -- ^ rotate to the next layout (indicator click / NextLayout cmd)
+  , kbUiPoll :: IO Bool
+    -- ^ the 1s render-loop poll; True when the group changed
+  , kbUiSyncFocus :: CLong -> IO Bool
+    -- ^ per-app layout restore for the focused window's xid (X11);
+    -- False when unsupported or nothing changed
+  }
+
+kbToUi :: Display -> KeyboardEnv -> KbUi
+kbToUi dpy kb = KbUi
+  { kbUiState = kbState kb
+  , kbUiRotate = rotateLayout kb
+  , kbUiPoll = pollGroup kb
+  , kbUiSyncFocus = syncFocus kb dpy
   }
 
 -- | Per-application layout memory (config keyboard.per-app, default on;

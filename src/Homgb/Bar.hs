@@ -20,6 +20,9 @@
 module Homgb.Bar
   ( BarState(..)
   , WinInfo(..)
+  , BarActions(..)
+  , BarSection(..)
+  , x11BarActions
   , newBarState
   , refreshBar
   , startBarEvents
@@ -83,6 +86,29 @@ data WinInfo = WinInfo
   { wiXid :: CLong
   , wiTitle :: T.Text
   } deriving (Show, Eq)
+
+-- | How bar clicks reach the window manager: EWMH client messages on
+-- X11, dbus methods on Wayland. The bar renderers are backend-agnostic
+-- over this.
+data BarActions = BarActions
+  { baSwitchWs :: TVar BarState -> Int -> IO ()
+    -- ^ activate the workspace at the given index in 'barNames'
+  , baActivateWin :: CLong -> IO ()
+    -- ^ focus the taskbar window (X11 xid / backend-assigned pseudo id)
+  }
+
+-- | The bar's state plus its click actions — what renderers get in
+-- place of the old \"maybe a TVar when an X display exists\".
+data BarSection = BarSection
+  { barTv :: TVar BarState
+  , barActs :: BarActions
+  }
+
+x11BarActions :: Display -> BarActions
+x11BarActions dpy = BarActions
+  { baSwitchWs = \_st i -> switchTo dpy i
+  , baActivateWin = activate dpy
+  }
 
 -- | Cached EWMH desktop/taskbar state (see 'refreshBar').
 data BarState = BarState
@@ -341,21 +367,21 @@ activate dpy xid =
 
 -- | Legacy shrink-wrap bar: workspaces + taskbar window buttons.
 -- Returns the content width (0 when nothing is rendered).
-renderBar :: Display -> TVar BarState -> Config -> Theme -> Float -> IO Float
-renderBar dpy st config theme gap = do
+renderBar :: BarActions -> TVar BarState -> Config -> Theme -> Float -> IO Float
+renderBar acts st config theme gap = do
   s <- readTVarIO st
   let showWs = configBarWorkspaces config && not (null (barNames s))
-  wsW <- renderWorkspaces dpy st config theme gap
-  winW <- renderWinButtons dpy st config theme gap showWs
+  wsW <- renderWorkspaces acts st config theme gap
+  winW <- renderWinButtons acts st config theme gap showWs
   return (wsW + winW)
 
 -- | Workspace items (left section): "1 | 2 | 3" — text labels with
 -- full-row-height invisible click targets, separated by vertical
 -- lines. `rowH` is the icon-row advance (btn + 2*framePadding) used
 -- for vertical centering. Returns the content width.
-renderWorkspaces :: Display -> TVar BarState -> Config -> Theme -> Float
+renderWorkspaces :: BarActions -> TVar BarState -> Config -> Theme -> Float
                  -> IO Float
-renderWorkspaces dpy st config theme rowH = do
+renderWorkspaces acts st config theme rowH = do
   s <- readTVarIO st
   if configBarWorkspaces config && not (null (barNames s))
     then go s (zip [0 :: Int ..] (barNames s))
@@ -369,15 +395,15 @@ renderWorkspaces dpy st config theme rowH = do
         sameLineS 0
       (w, clicked) <- barItem theme rowH ("ws-" <> T.pack (show i)) name
         (i == barCurrent s && i < length (barNames s))
-      when clicked $ switchTo dpy i
+      when clicked $ baSwitchWs acts st i
       (w +) <$> go s rest
 
 -- | Taskbar window items (clickable, current workspace), same visual
 -- style as the workspaces. withSep renders a leading separator when a
 -- left section was already rendered. Returns the content width.
-renderWinButtons :: Display -> TVar BarState -> Config -> Theme -> Float -> Bool
+renderWinButtons :: BarActions -> TVar BarState -> Config -> Theme -> Float -> Bool
                  -> IO Float
-renderWinButtons dpy st config theme rowH withSep = do
+renderWinButtons acts st config theme rowH withSep = do
   s <- readTVarIO st
   if configBarWindows config && not (null (barWindows s))
     then do
@@ -398,7 +424,7 @@ renderWinButtons dpy st config theme rowH withSep = do
       (w, clicked) <- barItem theme rowH
         ("win-" <> T.pack (show (wiXid win)) <> "##" <> T.pack (show i)) label
         (wiXid win == barActiveWindow s)
-      when clicked $ activate dpy (wiXid win)
+      when clicked $ baActivateWin acts (wiXid win)
       (w +) <$> go s rest
 
 -- | One clickable bar item: an invisible button spanning the full row

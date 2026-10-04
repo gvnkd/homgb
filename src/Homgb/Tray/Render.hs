@@ -36,13 +36,14 @@ import qualified DearImGui.Raw as Raw
 import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
   ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
-  , renderDateWidget, renderWinButtons, renderWorkspaces
+  , BarSection(..), renderDateWidget, renderWinButtons
+  , renderWorkspaces
   , measureWorkspaces, measureWinButtons, renderSep, sepWidth
   , centerCursorY
   , sameLineS, framePadX, framePadY )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
-import Homgb.Keyboard (KeyboardEnv(..), currentLayout, rotateLayout)
+import Homgb.Keyboard (KbUi(..), currentLayout)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
 import Homgb.Tray.Embed (XEmbedIcon, pumpEmbedEvents, layoutEmbedIcons)
@@ -135,7 +136,7 @@ offerTooltip env key tipLines (wx, wy) = do
 -- content size so the caller can shrink-wrap the SDL window. In bar
 -- layout mode the surface spans the full monitor width instead.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Theme
-           -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+           -> Maybe KbUi -> Ptr () -> Maybe BarSection
            -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
 renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenSize
   | configBarLayout config =
@@ -147,7 +148,7 @@ renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenS
 
 -- | Legacy shrink-wrapped corner tray.
 renderTrayLegacy :: TrayEnv -> TrayTextures -> Config -> Theme
-                 -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+                 -> Maybe KbUi -> Ptr () -> Maybe BarSection
                  -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
 renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
                  winPos screenSize = do
@@ -196,12 +197,11 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
       (kbWidth, barWidth) <- if beginVisible
         then do
           barW0 <- case mBar of
-            Just barT -> do
-              wsW <- withDpy $ \dpy ->
-                renderWorkspaces dpy barT config theme (btn + 2 * framePadY)
-              winW <- withDpy $ \dpy ->
-                renderWinButtons dpy barT config theme (btn + 2 * framePadY)
-                  (wsW > 0)
+            Just (BarSection barT acts) -> do
+              wsW <- renderWorkspaces acts barT config theme
+                (btn + 2 * framePadY)
+              winW <- renderWinButtons acts barT config theme
+                (btn + 2 * framePadY) (wsW > 0)
               return (wsW + winW)
             Nothing -> return 0
           when (barW0 > 0 && not (null items)) $
@@ -257,9 +257,6 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
   return (trayW, h)
   where
     barItemGap = 12
-    withDpy f = case trayDisplay env of
-      Just dpy -> f dpy
-      Nothing -> return 0
 
 -- | Full-width bar layout (the xmobar replacement), left to right:
 -- workspaces, active window title (capped at bar.window-title-max
@@ -268,7 +265,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
 -- "HH:MM" (rightmost). Returns (monitor width, height) — the caller sizes the
 -- surface to the full monitor width.
 renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
-              -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+              -> Maybe KbUi -> Ptr () -> Maybe BarSection
               -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
 renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
               winPos screenSize@(monW, _) = do
@@ -353,14 +350,14 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
     -- the space left by the fixed sections.
     measureSections items nEmbed btn traySpacing = do
       wsW <- case mBar of
-        Just barT -> measureWorkspaces barT config
+        Just (BarSection barT _) -> measureWorkspaces barT config
         Nothing -> return 0
       winW <- case mBar of
-        Just barT -> measureWinButtons barT config
+        Just (BarSection barT _) -> measureWinButtons barT config
         Nothing -> return 0
       kbW <- measureIndicator
       titleNatural <- case mBar of
-        Just barT -> do
+        Just (BarSection barT _) -> do
           s <- readTVarIO barT
           case barActiveTitle s of
             Nothing -> return 0
@@ -405,7 +402,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       return (SectionLayout left right titleW rightX)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
-        s <- readTVarIO (kbState kb)
+        s <- readTVarIO (kbUiState kb)
         let code = T.toUpper (T.take 2 (currentLayout s))
         if T.null code then return 0 else do
           ImVec2 tw _ <- calcTextSize code True 0
@@ -436,7 +433,7 @@ data SectionLayout = SectionLayout
 -- text metrics vary), so anything right of the spacer shifted with
 -- the title while the analytically-placed XEmbed icons stood still.
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
-          -> Maybe KeyboardEnv -> Ptr () -> Maybe (TVar BarState)
+          -> Maybe KbUi -> Ptr () -> Maybe BarSection
           -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
           -> SectionLayout
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
@@ -451,14 +448,14 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
       winOn = secFlag 2
   wsRendered <-
     if wsOn then case mBar of
-      Just barT -> do
-        _ <- withDpy $ \dpy -> renderWorkspaces dpy barT config theme traySpacing
+      Just (BarSection barT acts) -> do
+        _ <- renderWorkspaces acts barT config theme traySpacing
         return True
       Nothing -> return False
     else return False
   titleRendered <-
     if titleOn then case mBar of
-      Just barT -> do
+      Just (BarSection barT _) -> do
         s <- readTVarIO barT
         case barActiveTitle s of
           Nothing -> return False
@@ -477,10 +474,9 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
     else return False
   _ <-
     if winOn then case mBar of
-      Just barT -> do
-        _ <- withDpy $ \dpy ->
-          renderWinButtons dpy barT config theme rowH
-            (wsRendered || titleRendered)
+      Just (BarSection barT acts) -> do
+        _ <- renderWinButtons acts barT config theme rowH
+          (wsRendered || titleRendered)
         return True
       Nothing -> return False
     else return False
@@ -514,23 +510,20 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   void $ renderClockWidget theme traySpacing (afterInd || dateW > 0)
   where
     rowH = btn + 2 * framePadY
-    withDpy f = case trayDisplay env of
-      Just dpy -> f dpy
-      Nothing -> fail "homgb: no X display (trayDisplay)"
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
 -- Clicking rotates layouts, same as the hotkey. The label is drawn at
 -- a size fitted so its button height matches the icon row (btn), i.e.
 -- visually the same height as the tray icons. Returns the rendered
 -- width (0 when nothing is drawn).
-renderIndicator :: TrayEnv -> Maybe KeyboardEnv -> Bool -> Theme -> Float
+renderIndicator :: TrayEnv -> Maybe KbUi -> Bool -> Theme -> Float
                 -> Ptr () -> Float -> Bool -> (Int, Int) -> IO Float
 renderIndicator env kbEnv indicatorOn theme gap mainFont btn follow winPos =
   case kbEnv of
     Just kb | indicatorOn -> do
       -- the group itself is polled on a 1s deadline in frameUpkeep
       -- (render-on-wake: no per-frame polling here)
-      s <- readTVarIO (kbState kb)
+      s <- readTVarIO (kbUiState kb)
       let code = T.toUpper (T.take 2 (currentLayout s))
       if T.null code then return 0 else do
         when follow $ sameLineS gap
@@ -561,7 +554,7 @@ renderIndicator env kbEnv indicatorOn theme gap mainFont btn follow winPos =
             popStyleColor 3
             offerTooltip env "kbdlayout" [currentLayout s] winPos
             when haveFont popFont
-            when clicked $ rotateLayout kb
+            when clicked $ kbUiRotate kb
             return (tw + 2 * framePadX)
     _ -> return 0
 

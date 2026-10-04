@@ -34,6 +34,59 @@
   margin. XKB gap: river holds the seat state; xmonad applies switches
   (river keyboard-layout, VERIFY on pinned river 0.4.5) and tracks the
   group. XEmbed: SNI-only under Wayland.
+- WAYLAND BACKEND STEP 2 landed (2026-10-04, homgb uncommitted): WmClient
+  (org.xmonad.WM subscriber + callNoReply proxies), Backend.Wayland
+  (SDL display enumeration, global mouse state, SDL-only show/hide,
+  strut TVar, BarState translation with pseudo-xid map + homgb-*
+  filtering, KbUi fed by LayoutChanged). New seams: BarActions/
+  BarSection (renderWorkspaces/renderWinButtons take actions instead
+  of Display), KbUi (KeyboardEnv projected via kbToUi dpy; carries
+  kbUiSyncFocus for per-app restore). SDL windows created with
+  createWindowWithProperties (title + SDL.window.create.app_id +
+  flags). Selection: preferredBackend (HOMGB_BACKEND or
+  XDG_SESSION_TYPE=wayland) BEFORE SDL_Init; sets SDL_VIDEODRIVER=
+  wayland — CRITICAL: with DISPLAY set (XWayland) SDL picks X11 and
+  the WM never sees the windows.
+- Fork updates pushed: 823fbb8 (WorkspacesChanged a(ssb) ORDERED —
+  a{s(bb)} sorted "10" between "1" and "2"), f94fb93 (PlaceSurface
+  placements PERSISTENT, retried per manage sequence, change-
+  suppressed — the first placement usually precedes the surface's
+  map and was dropped), 9bffd3a (surface lookup falls back to TITLE:
+  SDL ignores the per-window app_id property; homgb surfaces arrive
+  with app_id "homgb", title "homgb-tray" etc). nix.config pinned
+  9bffd3a (fa5aae4).
+- MID-SESSION WM SWAP WEDGES RIVER (cost a session): SIGKILLing the
+  WM and attaching a freshly-built one left org.xmonad.WM owned but
+  the loop dead (black screen, no signals, methods ACK but no
+  effect). Recovery = pkill -9 river → sddm greeter → re-login.
+  Don't test WM swaps on the live session; use headless-river.sh.
+  river takes ~10s to release the WM slot after a kill ("another
+  window manager is already running" until then).
+- LIVE smoke results (river session): popups render and the WM
+  places them natively via PlaceSurface (visible, correct size) —
+  the whole dbus channel works end-to-end. Still open: bar surface
+  visibility (tray renders + PlaceSurface flows; verify against a
+  fresh session running WM >= 9bffd3a), and SDL monitor geometry
+  looked like one 3840-wide display (check getDisplays output on the
+  2-monitor node).
+- LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
+  owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
+  next WorkspacesChanged showed "5" current with "1" nonEmpty —
+  full signal trio (Workspaces/Windows/Focus) emitted. Caveat: an
+  IDLE WM emits nothing (diff suppression) — the initial burst fires
+  during startup before any monitor can attach; test with a method
+  call, not passive monitoring.
+- Node switched to the fork (2026-10-04): nix.config
+  modules/xmonad-river.nix pins omgbebebe/xmonad@b5ef196 (hash
+  sha256-/YrvAi1H2XEQO7Bd16qRNN8VK9Tch0obVZ01Wf3yREo=), ghcEnv has
+  p.dbus, defaultConfig + ~/.config/xmonad-river/xmonad.hs both
+  start dbusService from startupHook (the node copy was read-only
+  0444 from the store cp — chmod u+w first). nix.config pushed
+  (cd3e349). ghcWithPackages[xmonad,dbus] verified building on the
+  pinned nixpkgs. homgb seam pushed: a41a85f on gvnkd/homgb master.
+  GOTCHA: `nix-prefetch-url --unpack` printed a 39-char non-SRI hash
+  (useless for fetchFromGitHub); `nix store prefetch-file --unpack
+  --json` gives the right sha256-...= SRI.
 - xmonad-side dbus service DONE (2026-10-04,
   omgbebebe/xmonad@xmonad-on-river b5ef196): XMonad.River.DBus owns
   org.xmonad.WM, signals WorkspacesChanged a{s(bb)} / WindowsChanged

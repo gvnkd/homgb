@@ -36,6 +36,8 @@ library
                        , Homgb.Keyboard.Xcb
                        , Homgb.Backend
                        , Homgb.Backend.X11
+                       , Homgb.Backend.Wayland
+                       , Homgb.Wayland.WmClient
                        , Homgb.Control
   build-depends:       base >= 4.7 && < 5
                       , bytestring

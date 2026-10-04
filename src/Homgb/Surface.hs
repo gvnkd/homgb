@@ -89,7 +89,7 @@ data Surfaces = Surfaces
 -- backend init. raiseOnMap: see 'sRaiseOnMap'.
 createSurface :: String -> V2 Int -> Bool -> IO Surface
 createSurface name (V2 w h) raiseOnMap = do
-  window <- SDL3.createSurfaceWindow w h
+  window <- SDL3.createSurfaceWindow name w h
   wid <- fromIntegral <$> getWindowID window
   glCtx <- SDL3.createGLContext window
   ctx <- Raw.createContext

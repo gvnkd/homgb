@@ -10,7 +10,7 @@ import Data.Word (Word32)
 
 import Homgb.Backend (Backend)
 import Homgb.Bar (BarState, newBarState)
-import Homgb.Keyboard (KeyboardEnv)
+import Homgb.Keyboard (KbUi)
 import Homgb.Monitors (Monitor)
 import Homgb.Notifications.Daemon (NotifyState)
 import Homgb.Surface (Surfaces)
@@ -27,7 +27,9 @@ data AppState = AppState
   , appHeights :: TVar (Map.Map Int Float)
     -- ^ Last measured popup heights, keyed by notiId (stacking layout)
   , appTray :: TrayEnv
-  , appKeyboard :: Maybe KeyboardEnv
+  , appKeyboard :: Maybe KbUi
+    -- ^ the keyboard indicator/control slice (xcb-backed on X11,
+    -- WM-signal-backed on Wayland)
   , appSurfaces :: Surfaces
   , appScreenSize :: (Int, Int)
     -- ^ primary X screen size, fallback monitor geometry
@@ -56,15 +58,14 @@ data AppState = AppState
     -- ^ push a user event on the SDL queue (see appUserEvent)
   }
 
-initialAppState :: Backend -> TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
+initialAppState :: Backend -> TVar NotifyState -> TrayEnv -> Maybe KbUi
                 -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
-                -> Word32 -> IO () -> IO AppState
-initialAppState backend tState tray kb surfaces screenSize monitors theme centerVisible userEv wake = do
+                -> TVar Bool -> Word32 -> IO () -> IO AppState
+initialAppState backend tState tray kb surfaces screenSize monitors theme centerVisible barDirty userEv wake = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
   bar <- newBarState
-  barDirty <- newTVarIO True
   barTick <- newTVarIO 0
   strut <- newTVarIO Nothing
   return AppState

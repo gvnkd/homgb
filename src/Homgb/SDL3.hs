@@ -59,14 +59,16 @@ import SDL3.Sys.Events
   , pattern SDL_EVENT_QUIT
   )
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
-import SDL3.Sys.Properties (SDL_PropertiesID(..), getNumberProperty)
+import SDL3.Sys.Properties
+  ( SDL_PropertiesID(..), createProperties, destroyProperties
+  , getNumberProperty, setNumberProperty, setStringProperty)
 import qualified SDL3.Sys.Video as RawVideo
   (glCreateContext, glMakeCurrent, glSwapWindow, getWindowPosition
   , getWindowSize, hideWindow, setWindowPosition, showWindow)
 import SDL3.Sys.Video
   ( SDL_GLContext(..)
   , SDL_Window
-  , createWindow
+  , createWindowWithProperties
   , destroyWindow
   , getWindowProperties
   , pattern SDL_WINDOW_BORDERLESS
@@ -95,20 +97,35 @@ quitVideo = quit
 -- | Borderless, transparent, hidden. Shown by the caller AFTER EWMH
 -- props are set (WMs read them at manage time).
 createMainWindow :: IO Window
-createMainWindow = createSurfaceWindow 500 700
+createMainWindow = createSurfaceWindow "homgb" 500 700
 
--- | Hidden borderless transparent OpenGL window. Caller positions,
+-- | Hidden borderless transparent OpenGL window. `name` becomes both
+-- the title and the Wayland app_id (SDL_PROP_WINDOW_CREATE_APP_ID) —
+-- the WM (xmonad-on-river) identifies homgb's surfaces by it; on X11
+-- WMProps tags the window the EWMH way instead. Caller positions,
 -- tags, shows.
-createSurfaceWindow :: Int -> Int -> IO Window
-createSurfaceWindow w h =
-  withCString "homgb" $ \title ->
-    createWindow (ConstPtr title) (i32 w) (i32 h) flags
+createSurfaceWindow :: String -> Int -> Int -> IO Window
+createSurfaceWindow name w h = do
+  props <- createProperties
+  setStr props "SDL.window.create.title" name
+  setStr props "SDL.window.create.app_id" name
+  setNum props "SDL.window.create.flags" (fromIntegral flags)
+  win <- createWindowWithProperties props
+  _ <- destroyProperties props
+  if win == nullPtr then dieSDL else return win
   where
     flags =
       SDL_WINDOW_OPENGL
         .|. SDL_WINDOW_BORDERLESS
         .|. SDL_WINDOW_TRANSPARENT
         .|. SDL_WINDOW_HIDDEN
+    setStr props k v =
+      withCString k $ \kp ->
+        withCString v $ \vp ->
+          void' (setStringProperty props (ConstPtr kp) (ConstPtr vp))
+    setNum props k v =
+      withCString k $ \kp ->
+        void' (setNumberProperty props (ConstPtr kp) v)
 
 showWindow :: Window -> IO ()
 showWindow w = void' (RawVideo.showWindow w)

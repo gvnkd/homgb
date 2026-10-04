@@ -17,9 +17,9 @@ module Homgb.Backend
 
 import Control.Concurrent.STM.TVar (TVar)
 
-import Homgb.Bar (BarState)
+import Homgb.Bar (BarActions, BarState)
 import Homgb.Config (Config)
-import Homgb.Keyboard (KeyboardEnv)
+import Homgb.Keyboard (KbUi)
 import Homgb.Monitors (Monitor)
 import Homgb.Surface (Surface, Surfaces)
 import Homgb.Tray (TrayEnv)
@@ -32,7 +32,7 @@ data BarUpkeep = BarUpkeep
   { buSurfaces :: Surfaces
   , buBar :: TVar BarState
   , buStrut :: TVar (Maybe (Int, Int, Int))
-  , buKeyboard :: Maybe KeyboardEnv
+  , buKeyboard :: Maybe KbUi
   , buTray :: TrayEnv
   }
 
@@ -51,18 +51,27 @@ data Backend = Backend
     -- ^ legacy tray host startup (XEmbed on X11; absent on Wayland)
   -- bar
   , bkStartBarEvents :: TVar Bool -> IO () -> IO ()
-    -- ^ event listener thread setting the dirty flag
+    -- ^ event listener setting the dirty flag (X11: a select loop
+    -- thread; Wayland: nothing — the WM client writes the flag from
+    -- its signal handlers)
   , bkBarUpkeep :: BarUpkeep -> IO (Bool, Bool)
     -- ^ bar state re-read + platform upkeep; returns (barChanged,
     -- kbFocusChanged) — kbFocusChanged is the per-app layout restore
+  , bkBarActions :: BarActions
+    -- ^ how bar clicks reach the WM (client messages on X11, dbus
+    -- methods on Wayland)
   , bkUpdateStrut :: Bool -> TVar (Maybe (Int, Int, Int)) -> Surface
                   -> Monitor -> Int -> IO ()
     -- ^ reserve the bar's strip (struts on X11; a no-op or a pure
     -- TVar write elsewhere). Bool = config enabled flag
+  -- surfaces: position a surface's top-left in screen coordinates
+  -- (X11: SDL_SetWindowPosition; Wayland: clients cannot position —
+  -- the WM does, via the PlaceSurface method)
+  , bkMoveSurface :: Surface -> Int -> Int -> IO ()
   -- pointer
   , bkPollPointer :: IO (Maybe (Int, Int))
     -- ^ pointer position in screen coordinates; Nothing when the
     -- platform cannot see the pointer outside its own surfaces
   -- keyboard
-  , bkStartKeyboard :: Config -> IO () -> IO (Maybe KeyboardEnv)
+  , bkStartKeyboard :: Config -> IO () -> IO (Maybe KbUi)
   }

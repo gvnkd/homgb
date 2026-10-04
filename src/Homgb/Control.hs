@@ -16,13 +16,13 @@ import DBus.Client
   , defaultInterface, interfaceName, interfaceMethods
   , nameAllowReplacement, nameReplaceExisting)
 
-import Homgb.Keyboard (KeyboardEnv, rotateLayout)
+import Homgb.Keyboard (KbUi(..))
 
 -- | Own org.homgb and export /org/homgb/Control. Best-effort: a
 -- failed name request only disables remote control. centerVisible is
 -- the notification center panel's show/hide switch. `wake` re-renders
 -- after command-handling mutations (dbus dispatcher thread).
-startControl :: Maybe KeyboardEnv -> TVar Bool -> IO () -> IO ()
+startControl :: Maybe KbUi -> TVar Bool -> IO () -> IO ()
 startControl kbOpt centerVisible wake = do
   client <- connectSession
   _ <- requestName client "org.homgb"
@@ -37,6 +37,6 @@ startControl kbOpt centerVisible wake = do
     }
   return ()
 
-nextLayout :: IO () -> Maybe KeyboardEnv -> IO ()
-nextLayout wake (Just kb) = rotateLayout kb >> wake
+nextLayout :: IO () -> Maybe KbUi -> IO ()
+nextLayout wake (Just kb) = kbUiRotate kb >> wake
 nextLayout _ Nothing = return ()

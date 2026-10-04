@@ -7,8 +7,12 @@
 -- the keyboard manager open their own connections, as before.
 module Homgb.Backend.X11
   ( x11Backend
+  , preferredBackend
   , selectBackend
   ) where
+
+-- selection lives here because it needs both instances; the Wayland
+-- backend imports no X11, so the dependency is one-way
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, modifyTVar', readTVarIO, writeTVar)
@@ -23,18 +27,22 @@ import System.Exit (die)
 import System.IO (hPutStrLn, stderr)
 
 import Homgb.Backend
-import Homgb.Bar (BarState, barActiveWindow, refreshBar, startBarEvents)
+import Homgb.Backend.Wayland (waylandBackend)
+import Homgb.Bar (BarActions, BarState, barActiveWindow, refreshBar
+  , startBarEvents, x11BarActions)
 import Homgb.Config (Config(..))
 import qualified Homgb.Keyboard as Keyboard
-import Homgb.Keyboard (KeyboardEnv, syncFocus)
+import Homgb.Keyboard (KbUi(..), kbToUi)
 import qualified Homgb.Keyboard.Xcb as Xcb
 import Homgb.Monitors (Monitor(..), getMonitors)
 import Homgb.Surface
   ( Surface(..), Surfaces(..), reassertStacking, rootChildren
-  , showSurface, hideSurface, surfaceX11Id, tagSurface)
+  , showSurface, hideSurface, surfaceX11Id, tagSurface
+  , moveSurfaceWindow)
 import Homgb.Tray (TrayEnv(..), reapZombieItems)
 import Homgb.Tray.Embed (acquireTraySelection)
 import Homgb.WMProps (setStrutPartial)
+import Homgb.Wayland.WmClient (startWmClient)
 
 -- | Build the X11 backend over an existing display connection (the
 -- tray's).
@@ -51,26 +59,45 @@ x11Backend dpy = Backend
   , bkStartEmbedHost = startEmbedHost dpy
   , bkStartBarEvents = startBarEvents
   , bkBarUpkeep = barUpkeep dpy
+  , bkBarActions = x11BarActions dpy
   , bkUpdateStrut = updateStrut dpy
+  , bkMoveSurface = moveSurfaceWindow
   , bkPollPointer = pollPointer dpy
-  , bkStartKeyboard = Keyboard.startKeyboard
+  , bkStartKeyboard = \cfg wake ->
+      fmap (kbToUi dpy) <$> Keyboard.startKeyboard cfg wake
   }
 
--- | Backend selection: HOMGB_BACKEND=x11|wayland, else auto-detect from
--- the tray's display. Wayland is step 2 of design_docs/wayland.md.
-selectBackend :: Maybe Display -> IO Backend
-selectBackend mDpy = do
+-- | Which backend WOULD be selected — the pure env part, splittable
+-- from construction because SDL's video driver must be forced to
+-- Wayland BEFORE SDL_Init when this says "wayland" (both DISPLAY and
+-- WAYLAND_DISPLAY exist on a river session, and SDL prefers X11).
+preferredBackend :: IO (Maybe String)
+preferredBackend = do
   forced <- lookupEnv "HOMGB_BACKEND"
   case forced of
+    Just b -> return (Just b)
+    Nothing -> do
+      session <- lookupEnv "XDG_SESSION_TYPE"
+      return (if session == Just "wayland" then Just "wayland" else Nothing)
+
+-- | Backend selection. HOMGB_BACKEND=x11|wayland forces; otherwise a
+-- Wayland session (XDG_SESSION_TYPE) picks the Wayland backend and
+-- anything with an X display falls back to X11. The Wayland backend
+-- needs the bar-dirty TVar (its WM client writes it from signal
+-- handlers) and the wake action at construction time.
+selectBackend :: Maybe Display -> TVar Bool -> IO () -> IO Backend
+selectBackend mDpy barDirty wake = do
+  pref <- preferredBackend
+  case pref of
     Just "x11" -> requireX11 mDpy
-    Just "wayland" -> die
-      "homgb: HOMGB_BACKEND=wayland is not implemented yet \
-      \(design_docs/wayland.md step 2)"
-    _ -> case mDpy of
+    Just "wayland" -> wayland
+    Just other -> die ("homgb: unknown HOMGB_BACKEND " ++ other)
+    Nothing -> case mDpy of
       Just dpy -> return (x11Backend dpy)
       Nothing -> die
-        "homgb: no X display (DISPLAY not set) and no Wayland backend \
-        \yet (design_docs/wayland.md step 2)"
+        "homgb: no X display (DISPLAY not set); set HOMGB_BACKEND=wayland"
+  where
+    wayland = waylandBackend <$> startWmClient barDirty wake
 
 requireX11 :: Maybe Display -> IO Backend
 requireX11 (Just dpy) = return (x11Backend dpy)
@@ -108,7 +135,7 @@ barUpkeep dpy bu = do
   -- per-app layouts: the active-window read just refreshed; restore
   -- the layout remembered for the focused class
   kbFocus <- case buKeyboard bu of
-    Just kb -> syncFocus kb dpy (barActiveWindow newBar)
+    Just ui -> kbUiSyncFocus ui (barActiveWindow newBar)
     Nothing -> return False
   -- reap SNI items whose unique bus name died without unregistering
   -- (zombies spam the property poller and leave stuck empty menus);
