@@ -88,6 +88,11 @@ data Theme = Theme
   -- sizes (icon size / spacing fall back to the legacy config keys)
   , thTrayIconSize :: Int
   , thTraySpacing :: Int
+  -- XEmbed slot size = iconSize * this factor (sizes.tray
+  -- .xembed-icon-scale, default 1.0): clients like Telegram pad their
+  -- glyph inside the window, so a factor > 1 enlarges the glyph to
+  -- match the SNI icons
+  , thTrayXEmbedScale :: Float
   -- margins / paddings (pixels)
   , thTrayPadX :: Float
   , thTrayPadY :: Float
@@ -150,6 +155,7 @@ mkTheme config = do
     , thBarButtonHovered = color "bar.button-hovered" (ImVec4 1.0 1.0 1.0 0.10)
     , thTrayIconSize = fromMaybe (configTrayIconSize config) (tcTrayIconSize tc)
     , thTraySpacing = fromMaybe (configTraySpacing config) (tcTraySpacing tc)
+    , thTrayXEmbedScale = fromMaybe 1.0 (tcTrayXEmbedScale tc)
     , thTrayPadX = fromMaybe 8 (tcTrayPadX tc)
     , thTrayPadY = fromMaybe 8 (tcTrayPadY tc)
     , thPopupPadX = fromMaybe 8 (tcPopupPadX tc)

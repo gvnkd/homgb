@@ -76,7 +76,8 @@ import System.IO (hPutStrLn, stderr)
 import Homgb.WMProps (installErrorHandler)
 
 import DearImGui hiding (begin, w)
-import qualified DearImGui.Raw as Raw (pushStyleColor, textColored, setCursorPos)
+import qualified DearImGui.Raw as Raw
+  (pushStyleColor, textColored, setCursorPos, dummy)
 
 import Homgb.Config (Config(..))
 import Homgb.Theme (Theme(..))
@@ -447,6 +448,10 @@ barItem theme rowH key label active = do
         Raw.textColored colPtr txtPtr
     else text label
   withImVec2 (ImVec2 (x0 + w) y0) $ \p -> Raw.setCursorPos p
+  -- anchor the line at the row's origin: a following SameLine resumes
+  -- from the LAST ItemSize, which would otherwise be the centered text
+  -- (one centering offset lower per item — a staircase)
+  withImVec2 (ImVec2 0 0) Raw.dummy
   return (w, clicked)
 
 -- | Width of one bar item (text + click-target padding).
@@ -465,11 +470,16 @@ sepLabel = " | "
 -- of the given height.
 renderSep :: Theme -> Float -> IO ()
 renderSep theme rowH = do
-  ImVec2 _ th <- calcTextSize sepLabel True 0
+  ImVec2 sw th <- calcTextSize sepLabel True 0
+  ImVec2 cx cy0 <- getCursorPos
   centerCursorY theme rowH th
   withImVec4 (thBarSeparator theme) $ \colPtr ->
     BS.useAsCString (TE.encodeUtf8 sepLabel) $ \txtPtr ->
       Raw.textColored colPtr txtPtr
+  -- anchor the line at its origin y (see 'barItem'): SameLine after a
+  -- centered text resumes one centering offset lower otherwise
+  withImVec2 (ImVec2 (cx + sw) cy0) $ \p -> Raw.setCursorPos p
+  withImVec2 (ImVec2 0 0) Raw.dummy
 
 sepWidth :: IO Float
 sepWidth = do

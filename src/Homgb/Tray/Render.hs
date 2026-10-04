@@ -243,15 +243,21 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
         + fromIntegral n * itemW + gaps + gapKb + kbW
       h = btn + 2 * framePadY + 2 * thTrayPadY theme
   -- XEmbed icon slots: the foreign windows are children of the tray
-  -- surface; position them where the dummy reservations landed
+  -- surface; position them where the dummy reservations landed. The
+  -- slot is iconSize * xembed-icon-scale (not the full btn cell) so
+  -- its opaque 24-bit background hugs the glyph instead of showing a
+  -- solid square around it (slots can't do the bar's translucency);
+  -- the inset centers it in the btn cell (negative when scaled up)
   let slotPos :: Int -> (Int, Int, Int)
       slotPos i =
         ( floor (thTrayPadX theme)
             + (if barW > 0 then floor barW + floor barItemGap else 0)
             + (length items + i) * (floor itemW + floor traySpacing)
-            + floor framePadX
-        , floor (thTrayPadY theme) + floor framePadY
-        , floor btn )
+            + floor framePadX + inset
+        , floor (thTrayPadY theme) + floor framePadY + inset
+        , floor slotSz )
+      slotSz = iconSize * thTrayXEmbedScale theme
+      inset = floor ((btn - slotSz) / 2)
   pumpEmbeds env config theme slotPos
   placeEmbeds env config slotPos
   return (trayW, h)
@@ -330,15 +336,21 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
   -- icons are drawn at the same anchor ('slRightX'), computed once in
   -- measureSections — a single source of truth for the group's left
   -- edge (widths + inter-section gaps), so ImGui-drawn widgets and
-  -- foreign X windows can never drift apart.
+  -- foreign X windows can never drift apart. Slots are iconSize *
+  -- xembed-icon-scale (not the full btn cell): their opaque 24-bit
+  -- background then hugs the glyph instead of showing a solid square
+  -- around it (slots can't do the bar's translucency); the inset
+  -- centers the slot in the btn cell (negative when scaled up)
   let rightX0 = slRightX sects
       itemW = btn + 2 * framePadX
       slotPos :: Int -> (Int, Int, Int)
       slotPos i =
         ( floor rightX0 + (length items + i) * (floor itemW + floor traySpacing)
-            + floor framePadX
-        , floor (thTrayPadY theme) + floor framePadY
-        , floor btn )
+            + floor framePadX + inset
+        , floor (thTrayPadY theme) + floor framePadY + inset
+        , floor slotSz )
+      slotSz = iconSize * thTrayXEmbedScale theme
+      inset = floor ((btn - slotSz) / 2)
   pumpEmbeds env config theme slotPos
   placeEmbeds env config slotPos
   return (fromIntegral monW, btn + 2 * framePadY + 2 * thTrayPadY theme)
@@ -449,7 +461,7 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   wsRendered <-
     if wsOn then case mBar of
       Just (BarSection barT acts) -> do
-        _ <- renderWorkspaces acts barT config theme traySpacing
+        _ <- renderWorkspaces acts barT config theme rowH
         return True
       Nothing -> return False
     else return False
@@ -466,9 +478,14 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
               sameLineS 0
               renderSep theme rowH
               sameLineS 0
-            ImVec2 _ th <- calcTextSize fitted True 0
+            ImVec2 tw th <- calcTextSize fitted True 0
+            ImVec2 tx ty0 <- getCursorPos
             centerCursorY theme rowH th
             text fitted
+            -- anchor the line at its origin y (see barItem): the next
+            -- section's SameLine resumes from the last ItemSize
+            withImVec2 (ImVec2 (tx + tw) ty0) $ \p -> Raw.setCursorPos p
+            withImVec2 (ImVec2 0 0) Raw.dummy
             return True
       Nothing -> return False
     else return False

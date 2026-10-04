@@ -375,6 +375,7 @@ data ThemeConfig = ThemeConfig
   , tcMenuPadX :: Maybe Float
   , tcMenuPadY :: Maybe Float
   , tcBarBorderSize :: Maybe Float
+  , tcTrayXEmbedScale :: Maybe Float
   }
 
 defaultThemeConfig :: ThemeConfig
@@ -393,6 +394,7 @@ defaultThemeConfig = ThemeConfig
   , tcMenuPadX = Nothing
   , tcMenuPadY = Nothing
   , tcBarBorderSize = Nothing
+  , tcTrayXEmbedScale = Nothing
   }
 
 instance FromJSON ThemeConfig where
@@ -444,6 +446,7 @@ instance FromJSON ThemeConfig where
       <*> pure mpx
       <*> pure mpy
       <*> sizeOf "bar" "border-size"
+      <*> sizeOf "tray" "xembed-icon-scale"
     where
       -- theme.sizes.<section>.<key>
       sizeOf section key = do
