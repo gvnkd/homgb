@@ -108,6 +108,28 @@
   (native grp:alt_shift_toggle; WM can't see the group, indicator
   goes blind) or a small river patch exposing the xkb group. Sergey
   to decide.
+- THE FLOAT BUG ROOT CAUSE (2026-10-04, homgb 43fc1f5): WmClient.send
+  never set methodCallDestination — dbus messages WITHOUT a
+  Destination header are NEVER DELIVERED by the bus, but busctl
+  monitor SEES them (it taps the bus). So every PlaceSurface looked
+  like it reached the WM; the panel was never floated; the bar tiled.
+  Cost an evening + a wedge. LESSON: when a dbus call "arrives" per
+  the monitor but the peer never acts, diff the FULL headers —
+  Destination first. Verified live after the fix: WM logs
+  "floated/moved homgb-tray to (0,0) (3840,54)", bar renders
+  workspaces+title+date+clock natively, TopGap strip reserved.
+  WM per-sequence entry log dropped again in bc8b9e5 (nix pin update
+  not urgent — pure log cleanup; 1087f39 is functionally current).
+- PANEL ROUND 3 (2026-10-04, fork 89f9e4d, nix.config 1b99aff): (1)
+  bar only visible on ws 3 — river hides windows on background
+  workspaces; panels now FOLLOW the current workspace each sequence
+  (shiftWin; the fork's StackSet has no copy). (2) ToggleStruts: none
+  existed — the TopGap wrapper now handles a ToggleGap message,
+  M-b bound, the gap drops to 0 (config in module defaultConfig +
+  node xmonad.hs, compile-verified). (3) steam menu item clicks dead
+  — instrumented (HOMGB_DEBUG "menu click item=" in Tray/Menu/Render
+  and "menu Event clicked" in Menu/Client); awaiting Sergey's log to
+  see whether ImGui sees the click or the dbus Event is the dead half.
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —

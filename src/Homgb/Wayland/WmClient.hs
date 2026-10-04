@@ -75,9 +75,14 @@ startWmClient dirty wake = do
   ids <- newTVarIO Map.empty
   nextId <- newTVarIO 1
   let wc = WmClient client wake ws wins foc layout ids nextId
+  dbg <- lookupEnv "HOMGB_DEBUG"
   _ <- addMatch client matchAny { matchInterface = Just "org.xmonad.WM" }
          $ \sig -> do
     let body = signalBody sig
+    case dbg of
+      Just _ -> hPutStrLn stderr
+        ("homgb: wm: signal " ++ show (signalMember sig))
+      Nothing -> return ()
     case signalMember sig of
       "WorkspacesChanged" -> case listToMaybe body of
         Just v | Just x <- fromVariant v -> atomically (writeTVar ws x) >> markDirty

@@ -14,6 +14,8 @@ module Homgb.Tray.Menu.Client
 import Control.Monad (void)
 import Data.Word (Word32)
 import Data.Int (Int32)
+import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
 import DBus
 import DBus.Client
 
@@ -63,8 +65,14 @@ aboutToShow client name path itemId = void $
 
 -- | Event(id, "clicked", uint32 data, timestamp).
 sendClicked :: Client -> BusName -> ObjectPath -> Int32 -> Word32 -> IO ()
-sendClicked client name path itemId timestamp = void $
-  menuCall client name path (memberName_ "Event")
+sendClicked client name path itemId timestamp = do
+  dbg <- lookupEnv "HOMGB_DEBUG"
+  case dbg of
+    Just _ -> hPutStrLn stderr $
+      "menu Event clicked item=" ++ show itemId ++ " to "
+        ++ show path
+    Nothing -> return ()
+  void $ menuCall client name path (memberName_ "Event")
     [ toVariant itemId
     , toVariant ("clicked" :: String)
     , toVariant (0 :: Word32)

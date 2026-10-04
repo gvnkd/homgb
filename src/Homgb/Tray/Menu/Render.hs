@@ -330,6 +330,12 @@ renderRow client menus key path info node
       clicked <- selectable label
       endDisabled
       when clicked $ do
+        dbg <- lookupEnv "HOMGB_DEBUG"
+        case dbg of
+          Just _ -> hPutStrLn stderr $
+            "menu click item=" ++ show (lnId node) ++ " label="
+              ++ T.unpack (stripMnemonic (menuItemLabel node))
+          Nothing -> return ()
         ts <- fmap (round . (realToFrac :: POSIXTime -> Double)) getPOSIXTime
         void $ forkIO $
           sendClicked client (itemServiceName info)
