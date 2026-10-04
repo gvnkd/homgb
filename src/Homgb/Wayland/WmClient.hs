@@ -37,8 +37,9 @@ import Data.Word (Word64)
 import System.IO (hPutStrLn, stderr)
 
 import DBus
-  (Variant, fromVariant, methodCall, methodCallBody, parseMemberName
-  , signalBody, signalMember, toVariant, variantType)
+  (Variant, fromVariant, methodCall, methodCallBody
+  , methodCallDestination, parseMemberName, signalBody, signalMember
+  , toVariant, variantType)
 import DBus.Client
   (Client, addMatch, callNoReply, connectSession, matchAny, matchInterface)
 import DBus.Internal.Types (MemberName)
@@ -148,7 +149,11 @@ send :: WmClient -> String -> [Variant] -> IO ()
 send wc member args =
   void $ callNoReply (wcClient wc)
     (methodCall "/org/xmonad/WM" "org.xmonad.WM" (fromStringM member))
-    { methodCallBody = args }
+    { methodCallDestination = Just "org.xmonad.WM"
+      -- without a Destination the bus never DELIVERS the call (a
+      -- monitor still sees it — this cost an evening)
+    , methodCallBody = args
+    }
 
 -- | The keyboard indicator's data source: LayoutChanged feeds the
 -- state TVar; rotate goes to the WM; the 1s poll is a no-op (signals

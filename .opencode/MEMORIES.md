@@ -69,6 +69,45 @@
   fresh session running WM >= 9bffd3a), and SDL monitor geometry
   looked like one 3840-wide display (check getDisplays output on the
   2-monitor node).
+- STEP 2 VERIFIED LIVE (2026-10-04, pushed e643cb1): on the fresh
+  river session the bar renders natively — "2 | 1 | 3 | 4 | 5 | 6 | 7
+  | 8 | 9 | 0" workspaces (current highlighted), active title, clock
+  at the right — and popups are placed by the WM. Left running:
+  WAYLAND_DISPLAY must match the session (check /proc/<wm>/environ —
+  shells surviving a re-login keep the stale wayland-N); no
+  ~/.config/homgb on this node = defaults (bar.workspaces on,
+  bar.windows off). OPEN ITEMS: (1) SDL sees ONE 3840-wide display
+  instead of two 1920s (bar spans both monitors; check getDisplays on
+  this node — may be river reporting a combined output or a GDK_SCALE
+  interaction); (2) workspace order in the bar read "2 1 3 4..."
+  once — verify the a(ssb) order matches the WM's; (3) surface takes
+  keyboard focus ("homgb-tray" as active title) — probably wants the
+  WM to refuse focus to panel surfaces; (4) click-through of bar
+  items untested (needs a real pointer).
+- PANEL FIXES BATCH (2026-10-04, fork 1087f39, nix.config fd46333):
+  focus guard (panels never hold focus; emitter restores last
+  non-panel focus each sequence), NextLayout now rotates the KEYBOARD
+  group via dcSetGroup (was xmonad's NextLayout = layout algo!),
+  applySurfaces logs floats + unmatched panel ids (the live float
+  failure was undiagnosable from silence). Config gained a TopGap
+  LayoutClass wrapper (54px strip; the avoidStruts equivalent — no
+  strut protocol on river-wm) + dcLayouts [us,ru]. headless-dbus.sh
+  now asserts the float with the LIVE ORDERING (PlaceSurface before
+  the window exists; foot -T/-a homgb-tray as the client — foot's
+  single-instance DROPS --title on a second invocation!). All 6 pass.
+  GOTCHAS: busctl arg form is `Method siiiii v1 10 ...` (signature
+  then values); `shomgb-tray i 10` form misfires on the 'h'. In-sh-c
+  comments can't contain apostrophes. grep -c exits 1 on zero matches
+  (breaks && chains). ~3 stray test hangs came from pkill patterns
+  matching the wrapper shell itself.
+  KEYBOARD REALITY on this stack: nixpkgs river-0.4.5 has NO
+  riverctl (binary says "does not support riverctl" — the wm-protocol
+  world has no compositor CLI) and river_window_management has NO
+  keymap/group request. So SetLayoutGroup's dcSetGroup has nothing to
+  call; real switching needs either XKB_DEFAULT_LAYOUTS/OPTIONS env
+  (native grp:alt_shift_toggle; WM can't see the group, indicator
+  goes blind) or a small river patch exposing the xkb group. Sergey
+  to decide.
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —
