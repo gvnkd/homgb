@@ -145,6 +145,35 @@
   socket /tmp/ydo.sock, `YDOTOOL_SOCKET=... ydotool mousemove/click`
   — nixpkgs#ydotool; XAUTHORITY error seen when X tools leak into
   env).
+- THE SIGNAL STARVATION (2026-10-04, homgb e56f0cd) — the empty-
+  workspaces root cause: Wayland kbUiPoll never refreshed
+  lsQueriedAt → nextDeadline's kbD = startup+1s = PAST FOREVER →
+  waitMs clamps to 1ms → ~190 wakes/s idle spin (MEMORIES already
+  documented this failure mode for tooltips; the Wayland keyboard
+  path reintroduced it). On the DEFAULT SINGLE CAPABILITY the
+  1ms-spinning render thread starved dbus-haskell's receiver —
+  addMatch succeeded, zero signals received (probe with the same
+  code received fine because it was IDLE). Fixes: refresh
+  lsQueriedAt in kbUiPoll + -with-rtsopts=-N2. Verified: stable
+  workspace order, title, clock, idle 0.5%. LESSON: any new KbUi/
+  poll path MUST keep its deadline TVar fresh — grep lsQueriedAt
+  writes when touching poll paths.
+- WORKSPACE BOUNCE (2026-10-04, fork 46bf894, nix.config c120c35):
+  switching workspaces snapped back immediately — chained causes:
+  shiftWin (sticky panels) leaves the moved panel FOCUSED, then the
+  focus guard restored sLastFocus whose window still lived on the
+  PREVIOUS workspace → focusWindow views that workspace → bounce.
+  Fix: keep focus across the sticky move + only restore when
+  findTag == currentTag. headless-dbus.sh gained a real anti-bounce
+  assertion (second call goes to gamma, alpha-current-at-end =
+  bounce; first version of the assertion "failed" only because the
+  script's own round-trip switched back to alpha — check the script
+  before suspecting the code). GOTCHA: emitter/applySurfaces runs
+  inside the manage sequence; a windows()/focusWindow on a foreign-
+  workspace window changes the VIEW — any WM-side focus restore must
+  verify the target's workspace first. dbus-run-session teardown
+  hangs after river gets SIGKILL'd from a script — outer timeout +
+  pkill cleanup always.
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —

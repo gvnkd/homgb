@@ -40,8 +40,8 @@ import qualified DearImGui.Raw as Raw
   , pushStyleVar)
 
 import Homgb.Backend (Backend, BarUpkeep(..), bkBarActions, bkBarUpkeep
-  , bkHideSurface, bkMoveSurface, bkPollPointer, bkShowSurface
-  , bkUpdateStrut)
+  , bkHideSurface, bkMoveSurface, bkPollPointer, bkPressEdge
+  , bkShowSurface, bkUpdateStrut)
 import Homgb.Bar (BarSection(..), barActiveWindow)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
@@ -106,6 +106,18 @@ frameUpkeep app = do
             return (p /= old)
           Nothing -> return False
       else return False
+  -- HOMGB_PTRDEBUG: 1Hz global pointer position, for driving the
+  -- session with ydotool (follow-mouse off)
+  debugPointer <- lookupEnv "HOMGB_PTRDEBUG"
+  case debugPointer of
+    Just _ -> do
+      probeNow <- getPOSIXTime
+      lastProbe <- readTVarIO (appPointerProbe app)
+      when (probeNow - lastProbe > 1) $ do
+        atomically $ writeTVar (appPointerProbe app) probeNow
+        mP <- bkPollPointer (appBackend app)
+        hPutStrLn stderr ("ptr: " ++ show mP)
+    Nothing -> return ()
   kbChanged <- case appKeyboard app of
     Just kb -> kbUiPoll kb
     Nothing -> return False
@@ -307,7 +319,7 @@ drawMenusSurface app = do
       env = appTray app
   winPos <- SDL3.windowPosition (sWindow surf)
   mFrame <- renderMenus (trayClient env) (trayMenus env)
-    (trayPrevButtons env) (trayDisplay env) (appTheme app) winPos
+    (trayPrevButtons env) (bkPressEdge (appBackend app)) (appTheme app) winPos
     (trayWake env)
   case mFrame of
     Nothing -> bkHideSurface (appBackend app) surf

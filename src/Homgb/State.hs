@@ -37,6 +37,8 @@ data AppState = AppState
     -- ^ Xinerama monitor list (single entry on single-screen setups)
   , appPointer :: TVar (Int, Int)
     -- ^ last polled pointer root coordinates (for follow-mouse)
+  , appPointerProbe :: TVar POSIXTime
+    -- ^ last HOMGB_PTRDEBUG probe timestamp (rate limiter)
   , appBar :: TVar BarState
     -- ^ cached EWMH desktop/workspace state (bar section)
   , appBarDirty :: TVar Bool
@@ -65,6 +67,7 @@ initialAppState backend tState tray kb surfaces screenSize monitors theme center
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
+  pointerProbe <- newTVarIO 0
   bar <- newBarState
   barTick <- newTVarIO 0
   strut <- newTVarIO Nothing
@@ -79,6 +82,7 @@ initialAppState backend tState tray kb surfaces screenSize monitors theme center
     , appScreenSize = screenSize
     , appMonitors = monitors
     , appPointer = pointer
+    , appPointerProbe = pointerProbe
     , appBar = bar
     , appBarDirty = barDirty
     , appBarTick = barTick

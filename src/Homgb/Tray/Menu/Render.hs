@@ -7,6 +7,7 @@ module Homgb.Tray.Menu.Render
   , newMenus
   , openItemMenu
   , renderMenus
+  , samplePressEdge
   ) where
 
 import Control.Concurrent (forkIO)
@@ -194,12 +195,14 @@ data MenuFrame = MenuFrame
 -- context; each menu window sits at the surface's local origin (the
 -- surface window itself is moved to the stored root position). Closes
 -- a menu on any mouse press outside its window; presses are detected
--- by polling XQueryPointer (root coordinates) once per frame — ImGui's
--- own mouse position goes stale once the pointer leaves our surfaces.
-renderMenus :: Client -> Menus -> TVar (Bool, Bool) -> Maybe Display -> Theme
+-- by a backend sampler (XQueryPointer on X11, SDL state on Wayland —
+-- which only sees homgb's own surfaces, so clicking a foreign window
+-- does NOT close the menu there).
+renderMenus :: Client -> Menus -> TVar (Bool, Bool)
+            -> (TVar (Bool, Bool) -> IO (Bool, Int, Int)) -> Theme
             -> (Int, Int) -> IO () -> IO (Maybe MenuFrame)
-renderMenus client menus prevButtons mDisplay theme winPos _wake = do
-  (pressed, rootX, rootY) <- samplePressEdge mDisplay prevButtons
+renderMenus client menus prevButtons pressSampler theme winPos _wake = do
+  (pressed, rootX, rootY) <- pressSampler prevButtons
   m <- readTVarIO menus
   myPid <- getProcessID
   now <- getPOSIXTime

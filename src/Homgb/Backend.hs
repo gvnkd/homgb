@@ -72,6 +72,11 @@ data Backend = Backend
   , bkPollPointer :: IO (Maybe (Int, Int))
     -- ^ pointer position in screen coordinates; Nothing when the
     -- platform cannot see the pointer outside its own surfaces
+  , bkPressEdge :: TVar (Bool, Bool) -> IO (Bool, Int, Int)
+    -- ^ (left-or-right button went down since the last call, pointer
+    -- x, pointer y): the menu outside-click detector. X11 polls
+    -- XQueryPointer (global); Wayland uses SDL state, which only
+    -- covers homgb's own surfaces
   -- keyboard
   , bkStartKeyboard :: Config -> IO () -> IO (Maybe KbUi)
   }

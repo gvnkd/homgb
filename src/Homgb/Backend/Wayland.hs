@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | The Wayland backend: a plain SDL3 Wayland client that talks to
 -- xmonad-on-river over its org.xmonad.WM dbus service
@@ -18,10 +19,12 @@ module Homgb.Backend.Wayland (waylandBackend) where
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, modifyTVar', readTVarIO, writeTVar)
 import Control.Monad (unless, void, when)
+import Data.Bits ((.&.))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Word (Word64)
+import Foreign.C.Types (CFloat(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray0)
 import Foreign.Ptr (nullPtr)
@@ -31,7 +34,9 @@ import System.IO (hPutStrLn, stderr)
 
 import qualified Homgb.SDL3 as SDL3
 import SDL3.Sys.Bindgen.Rect (SDL_Rect(..))
-import SDL3.Sys.Mouse (getGlobalMouseState)
+import SDL3.Sys.Mouse
+  ( pattern SDL_BUTTON_LMASK, pattern SDL_BUTTON_RMASK
+  , getGlobalMouseState, getMouseState)
 import SDL3.Sys.Video (SDL_DisplayID(..), getDisplayBounds, getDisplays)
 
 import Homgb.Backend
@@ -76,8 +81,30 @@ waylandBackend wc = Backend
   , bkUpdateStrut = recordStrut
   , bkMoveSurface = moveSurface wc
   , bkPollPointer = sdlPointer
+  , bkPressEdge = pressEdgeSDL
   , bkStartKeyboard = \_ _ -> return (Just (wmKbUi wc))
   }
+
+-- | Button-edge detection from SDL state: button events reach SDL
+-- for homgb's own surfaces (the only place a menu interaction can
+-- happen anyway). The global position is valid over homgb's own
+-- surfaces; elsewhere it goes stale — accept it: unlike X11, a
+-- click on a FOREIGN window cannot close the menu (Wayland hides
+-- foreign input), the menu stays open until an item or its own
+-- surface is clicked.
+pressEdgeSDL :: TVar (Bool, Bool) -> IO (Bool, Int, Int)
+pressEdgeSDL prevVar = do
+  prev <- readTVarIO prevVar
+  (bx, by, btns) <- alloca $ \xPtr -> alloca $ \yPtr -> do
+    b <- getMouseState xPtr yPtr
+    x <- peek xPtr
+    y <- peek yPtr
+    return (realToFrac (x :: CFloat), realToFrac (y :: CFloat), b)
+  let left = (btns .&. SDL_BUTTON_LMASK) /= 0
+      right = (btns .&. SDL_BUTTON_RMASK) /= 0
+  atomically $ writeTVar prevVar (left, right)
+  let pressed = (left && not (fst prev)) || (right && not (snd prev))
+  return (pressed, floor bx, floor by)
 
 -- | Translate the signal TVars into the BarState the renderers read.
 -- barPid stays 0: own-surface filtering is by app_id prefix below

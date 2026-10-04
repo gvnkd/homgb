@@ -41,6 +41,7 @@ import Homgb.Surface
   , moveSurfaceWindow)
 import Homgb.Tray (TrayEnv(..), reapZombieItems)
 import Homgb.Tray.Embed (acquireTraySelection)
+import Homgb.Tray.Menu.Render (samplePressEdge)
 import Homgb.WMProps (setStrutPartial)
 import Homgb.Wayland.WmClient (startWmClient)
 
@@ -63,6 +64,7 @@ x11Backend dpy = Backend
   , bkUpdateStrut = updateStrut dpy
   , bkMoveSurface = moveSurfaceWindow
   , bkPollPointer = pollPointer dpy
+  , bkPressEdge = samplePressEdge (Just dpy)
   , bkStartKeyboard = \cfg wake ->
       fmap (kbToUi dpy) <$> Keyboard.startKeyboard cfg wake
   }
