@@ -2,10 +2,9 @@
 
 module Homgb (run) where
 
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
+import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO)
 import Control.Exception (bracket_)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad (forM, unless, void, when)
 import Control.Monad.IO.Class
 import Control.Monad.Managed
 import Data.Word (Word32)
@@ -20,16 +19,18 @@ import Graphics.GL
 import Linear (V2(..))
 
 import System.Directory (doesFileExist, getXdgDirectory, XdgDirectory(..))
-import Data.Maybe (fromMaybe)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
 
 import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
-import Homgb.Bar (barCovered, startBarEvents)
+import Homgb.Bar (barCovered)
+import Homgb.Backend (bkHideSurface, bkMonitors, bkName, bkScreenSize
+  , bkShowSurface, bkStartBarEvents, bkStartEmbedHost, bkStartKeyboard
+  , bkTagSurface)
+import Homgb.Backend.X11 (selectBackend)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
-import Homgb.Keyboard (KeyboardEnv(..), LayoutState(..), startKeyboard)
-import qualified Homgb.Keyboard.Xcb as Xcb
-import Homgb.Monitors (fallbackMonitor, getMonitors)
+import Homgb.Keyboard (KeyboardEnv(..), LayoutState(..))
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Notifications.Data (Notification(..))
 import Homgb.Render
@@ -39,7 +40,6 @@ import Homgb.State
 import Homgb.Surface
 import Homgb.Theme (applyFont, mkTheme)
 import Homgb.Tray (TrayEnv(..), TooltipInfo(..), startTray)
-import Homgb.Tray.Embed (acquireTraySelection)
 import Homgb.WMProps (WmClass(..))
 
 run :: IO ()
@@ -54,11 +54,11 @@ run = do
   let wake = SDL3.pushWakeEvent userEv
   tState <- startNotificationDaemon config wake
   tray <- startTray wake
-  kb <- startKeyboard config wake
-  screen <- fromMaybe (1920, 1080) <$> Xcb.screenSize
-  monitors <- case trayDisplay tray of
-    Just dpy -> getMonitors dpy screen
-    Nothing -> return (fallbackMonitor screen)
+  backend <- selectBackend (trayDisplay tray)
+  hPutStrLn stderr $ "homgb: backend: " ++ bkName backend
+  kb <- bkStartKeyboard backend config wake
+  screen <- bkScreenSize backend
+  monitors <- bkMonitors backend
   centerVisible <- newTVarIO False
   startControl kb centerVisible wake
   surfs0 <- mapM (\(name, V2 w h, raise) -> createSurface name (V2 w h) raise)
@@ -84,24 +84,18 @@ run = do
     [t, p, c, m, tt] -> return (t, p, c, m, tt)
     _ -> error "homgb: internal: expected 5 surfaces"
   -- EWMH tags must be set BEFORE the windows map
-  forM_ (trayDisplay tray) $ \dpy -> do
-    tagSurface dpy traySurf WmDock
-    tagSurface dpy popSurf WmNotification
-    tagSurface dpy centerSurf WmDock
-    tagSurface dpy menuSurf WmPopupMenu
-    tagSurface dpy tooltipSurf WmTooltip
+  mapM_ (\(s, c) -> bkTagSurface backend s c)
+    [ (traySurf, WmDock)
+    , (popSurf, WmNotification)
+    , (centerSurf, WmDock)
+    , (menuSurf, WmPopupMenu)
+    , (tooltipSurf, WmTooltip)
+    ]
   mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf]
   -- become the XEmbed tray host (trayer must not be running):
   -- the ICCCM MANAGER broadcast wakes already-running XEmbed apps
   -- (Telegram-desktop) so they dock without a restart.
-  mEmbed <- case (configTrayXEmbed config, trayDisplay tray) of
-    (True, Just dpy) -> do
-      mId <- surfaceX11Id traySurf
-      case mId of
-        Just wid -> acquireTraySelection dpy (fromIntegral wid)
-        Nothing -> return Nothing
-    _ -> return Nothing
-  atomically $ writeTVar (trayXEmbedHost tray) mEmbed
+  bkStartEmbedHost backend config tray traySurf
   -- making a GL context current maps a hidden SDL window; the
   -- popup/menu/center/tooltip surfaces start hidden (skip-draw while
   -- idle)
@@ -109,10 +103,10 @@ run = do
   SDL3.hideWindow (sWindow menuSurf)
   SDL3.hideWindow (sWindow centerSurf)
   SDL3.hideWindow (sWindow tooltipSurf)
-  app <- initialAppState tState tray kb
+  app <- initialAppState backend tState tray kb
     (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf) screen
     monitors theme centerVisible userEv wake
-  startBarEvents (appBarDirty app) wake
+  bkStartBarEvents backend (appBarDirty app) wake
   runManaged $ do
     -- the OpenGL3 renderer keeps per-ImGui-context backend data
     -- (io.BackendRendererUserData): init/shutdown it once per surface
@@ -126,7 +120,7 @@ run = do
       SDL3.hideWindow (sWindow menuSurf)
       SDL3.hideWindow (sWindow centerSurf)
       SDL3.hideWindow (sWindow tooltipSurf)
-      forM_ (trayDisplay tray) $ \dpy -> showSurface dpy traySurf
+      bkShowSurface backend traySurf
       mainLoop app
   SDL3.quitVideo
 
@@ -190,28 +184,24 @@ mainLoop app = do
         bar <- readTVarIO (appBar app)
         let covered = configBarLayout config && barCovered bar
         if covered
-          then forM_ (trayDisplay (appTray app)) $ \dpy ->
-                 hideSurface dpy (surfacesTray (appSurfaces app))
+          then bkHideSurface (appBackend app) (surfacesTray (appSurfaces app))
           else drawOn (surfacesTray (appSurfaces app)) (drawTraySurface app)
         -- SNI hover tooltips: own TOOLTIP surface (in-window tooltips
         -- clip against the bar viewport)
         ttOpen <- anyTooltipOpen app
         if ttOpen
           then drawOn (surfacesTooltip (appSurfaces app)) (drawTooltipSurface app)
-          else forM_ (trayDisplay (appTray app)) $ \dpy ->
-                 hideSurface dpy (surfacesTooltip (appSurfaces app))
+          else bkHideSurface (appBackend app) (surfacesTooltip (appSurfaces app))
         -- swapWindow on a hidden SDL window maps it, so the popup
         -- surface must be skipped entirely (not just drawn-and-hidden)
         -- while no popups are live
         if popCount == 0
-          then forM_ (trayDisplay (appTray app)) $ \dpy ->
-                 hideSurface dpy (surfacesPopups (appSurfaces app))
+          then bkHideSurface (appBackend app) (surfacesPopups (appSurfaces app))
           else drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
         centerOpen <- readTVarIO (appCenterVisible app)
         if centerOpen
           then drawOn (surfacesCenter (appSurfaces app)) (drawCenterSurface app)
-          else forM_ (trayDisplay (appTray app)) $ \dpy ->
-                 hideSurface dpy (surfacesCenter (appSurfaces app))
+          else bkHideSurface (appBackend app) (surfacesCenter (appSurfaces app))
         when popUnmeasured $
           drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
       -- the menu surface is drawn only while a menu is open: swapping
@@ -219,16 +209,14 @@ mainLoop app = do
       -- surfaces). menuOpen also drives the menu poll ticks above.
       if menuOpen
         then drawOn (surfacesMenus (appSurfaces app)) (drawMenusSurface app)
-        else forM_ (trayDisplay (appTray app)) $ \dpy ->
-               hideSurface dpy (surfacesMenus (appSurfaces app))
+        else bkHideSurface (appBackend app) (surfacesMenus (appSurfaces app))
     -- Menu hiding runs OUTSIDE the render gate: on the close
     -- transition neither `changed` nor menuOpen is true (closeMenu
     -- sets msVisible=False without waking), so a gated hide would
     -- leave the surface mapped forever. hideSurface is idempotent
     -- (sShown), so calling it on idle iterations is free.
     unless menuOpen $
-      forM_ (trayDisplay (appTray app)) $ \dpy ->
-        hideSurface dpy (surfacesMenus (appSurfaces app))
+      bkHideSurface (appBackend app) (surfacesMenus (appSurfaces app))
     mainLoop app
 
 -- | Earliest time the loop must wake even with no events: the bar

@@ -29,8 +29,6 @@ import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
-import Graphics.X11.Xlib.Display (defaultRootWindow)
-import Graphics.X11.Xlib.Misc (queryPointer)
 
 import System.IO (hPutStrLn, hFlush, stderr)
 import System.Environment (lookupEnv)
@@ -41,7 +39,9 @@ import qualified DearImGui.Raw as Raw
   , setNextWindowSize, showMetricsWindow, separator
   , pushStyleVar)
 
-import Homgb.Bar (refreshBar, barActiveWindow)
+import Homgb.Backend (Backend, BarUpkeep(..), bkBarUpkeep, bkHideSurface
+  , bkPollPointer, bkShowSurface, bkUpdateStrut)
+import Homgb.Bar (barActiveWindow)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
@@ -51,15 +51,13 @@ import Homgb.Notifications.Data
 import qualified Homgb.SDL3 as SDL3
 import Homgb.State
 import Homgb.Surface
-  (Surface(..), Surfaces(..), hideSurface, moveSurfaceWindow
-  , resizeSurfaceWindow, showSurface, surfaceWindowSize, reassertStacking
-  , rootChildren, surfaceX11Id)
+  (Surface(..), Surfaces(..), moveSurfaceWindow
+  , resizeSurfaceWindow, surfaceWindowSize)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
-import Homgb.Tray (TrayEnv(..), TooltipInfo(..), reapZombieItems)
-import Homgb.Keyboard (pollGroup, syncFocus)
+import Homgb.Tray (TrayEnv(..), TooltipInfo(..))
+import Homgb.Keyboard (pollGroup)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
 import Homgb.Tray.Render (renderTray)
-import Homgb.WMProps (setStrutPartial)
 
 -- | What frameUpkeep changed this iteration; the render loop redraws
 -- only when an SDL/user event arrived or one of these is True
@@ -99,27 +97,23 @@ frameUpkeep app = do
         || configTrayFollowMouse config
   pointerMoved <-
     if followAny
-      then case trayDisplay (appTray app) of
-        Just dpy -> do
-          (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
-          let p = (fromIntegral rx, fromIntegral ry)
-          old <- readTVarIO (appPointer app)
-          atomically $ writeTVar (appPointer app) p
-          return (p /= old)
-        Nothing -> return False
+      then do
+        mP <- bkPollPointer (appBackend app)
+        case mP of
+          Just p -> do
+            old <- readTVarIO (appPointer app)
+            atomically $ writeTVar (appPointer app) p
+            return (p /= old)
+          Nothing -> return False
       else return False
   kbChanged <- case appKeyboard app of
     Just kb -> pollGroup kb
     Nothing -> return False
-  -- The EWMH bar state and the z-order re-assert are EVENT-DRIVEN:
-  -- startBarEvents (X event listener thread) sets appBarDirty on
-  -- root property changes AND restacks, and wakes the loop. We
-  -- re-read only then, plus a slow 5s safety re-sync (covers what
-  -- root selection cannot see, e.g. client _NET_WM_NAME changes).
-  -- The stacking re-assert itself is suppressed while the root
-  -- children order matches the last assert (sStackOrder
-  -- fingerprint): map/unmap/configure churn that did not move our
-  -- surfaces costs one compare, not X requests.
+  -- The bar state and the z-order re-assert are EVENT-DRIVEN:
+  -- the backend's event listener (X11: root property/structure
+  -- selection) sets appBarDirty, and wakes the loop. We re-read only
+  -- then, plus a slow 5s safety re-sync. The platform upkeep itself
+  -- (EWMH re-read + stacking fingerprint on X11) lives in the backend.
   nowTick <- getPOSIXTime
   dirty <- readTVarIO (appBarDirty app)
   lastBar <- readTVarIO (appBarTick app)
@@ -129,30 +123,13 @@ frameUpkeep app = do
         atomically $ do
           writeTVar (appBarTick app) nowTick
           writeTVar (appBarDirty app) False
-        mChanged <- forM' (trayDisplay (appTray app)) $ \dpy -> do
-          children <- rootChildren dpy
-          let surfs = appSurfaces app
-          reassertStacking dpy children (surfacesTray surfs)
-          reassertStacking dpy children (surfacesMenus surfs)
-          reassertStacking dpy children (surfacesTooltip surfs)
-          mStrut <- readTVarIO (appStrut app)
-          oldBar <- readTVarIO (appBar app)
-          refreshBar dpy mStrut (appBar app)
-          newBar <- readTVarIO (appBar app)
-          -- per-app layouts: the active-window read just refreshed;
-          -- restore the layout remembered for the focused class
-          kbFocus <- case appKeyboard app of
-            Just kb -> syncFocus kb dpy (barActiveWindow newBar)
-            Nothing -> return False
-          -- reap SNI items whose unique bus name died without
-          -- unregistering (zombies spam the property poller and leave
-          -- stuck empty menus); close their menus too
-          removed <- reapZombieItems (trayClient (appTray app))
-                        (trayState (appTray app))
-          unless (null removed) $ atomically $ modifyTVar' (trayMenus (appTray app))
-            (Map.filterWithKey (\k _ -> k `notElem` removed))
-          return ((oldBar /= newBar), kbFocus)
-        return (maybe (False, False) id mChanged)
+        bkBarUpkeep (appBackend app) BarUpkeep
+          { buSurfaces = appSurfaces app
+          , buBar = appBar app
+          , buStrut = appStrut app
+          , buKeyboard = appKeyboard app
+          , buTray = appTray app
+          }
       else return (False, False)
   return Upkeep
     { upExpired = not (null due)
@@ -160,8 +137,6 @@ frameUpkeep app = do
     , upBarChanged = barChanged
     , upPointerMoved = pointerMoved
     }
-  where
-    forM' = forM
 
 -- | Pick the monitor a surface lives on: the configured index, or the
 -- one containing the pointer when follow-mouse is set.
@@ -182,7 +157,7 @@ drawTraySurface app = do
   let surf = surfacesTray (appSurfaces app)
   -- idempotent: the bar hides when covered (ToggleStruts/fullscreen)
   -- and must re-map when the strip is free again
-  forM_ (trayDisplay (appTray app)) $ \dpy -> showSurface dpy surf
+  bkShowSurface (appBackend app) surf
   state <- readTVarIO (appNotify app)
   let config = notiConfig state
       theme = appTheme app
@@ -222,21 +197,15 @@ drawTraySurface app = do
     Just _ -> Raw.showMetricsWindow
     Nothing -> return ()
 
--- | Set _NET_WM_STRUT_PARTIAL on the bar surface so avoidStruts
--- reserves its strip. Only writes when the geometry changed (each
--- write makes the WM re-run avoidStruts).
+-- | Reserve the bar's strip (struts on X11; the Wayland backend only
+-- records the rect so popups place below the bar). Only writes when
+-- the geometry changed (on X11 each write makes the WM re-run
+-- avoidStruts).
 updateStrut :: AppState -> Surface -> Monitor -> Int -> IO ()
 updateStrut app surf mon depth = do
   state <- readTVarIO (appNotify app)
-  when (configBarStruts (notiConfig state)) $ do
-    forM_ (trayDisplay (appTray app)) $ \dpy -> do
-      mId <- surfaceX11Id surf
-      forM_ mId $ \wid -> do
-        lastStrut <- readTVarIO (appStrut app)
-        let rect = (depth, monX mon, monX mon + monW mon - 1)
-        when (lastStrut /= Just rect) $ do
-          atomically $ writeTVar (appStrut app) (Just rect)
-          setStrutPartial dpy (fromIntegral wid) rect
+  bkUpdateStrut (appBackend app) (configBarStruts (notiConfig state))
+    (appStrut app) surf mon depth
 
 -- | Draw notification popups in their own surface window, placed at
 -- the configured corner of the target monitor. The surface hides when
@@ -247,14 +216,13 @@ drawPopupSurface :: AppState -> IO ()
 drawPopupSurface app = do
   let surf = surfacesPopups (appSurfaces app)
       tState = appNotify app
-      mDpy = trayDisplay (appTray app)
   state <- readTVarIO tState
   let config = notiConfig state
       notis = notiStList state
   if null notis
-    then forM_ mDpy $ \dpy -> hideSurface dpy surf
+    then bkHideSurface (appBackend app) surf
     else do
-      forM_ mDpy $ \dpy -> showSurface dpy surf
+      bkShowSurface (appBackend app) surf
       syncTextures app notis
       pruneCache app (map notiId notis)
       heights <- readTVarIO (appHeights app)
@@ -341,7 +309,7 @@ drawMenusSurface app = do
     (trayPrevButtons env) (trayDisplay env) (appTheme app) winPos
     (trayWake env)
   case mFrame of
-    Nothing -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
+    Nothing -> bkHideSurface (appBackend app) surf
     Just f -> do
       -- keep the whole menu on its monitor: with the tray at the right
       -- edge the cursor-anchored position would push the surface off
@@ -363,7 +331,7 @@ drawMenusSurface app = do
       -- re-mapped float's geometry from its float map, discarding
       -- resizes that happened while withdrawn (popup pattern).
       moveSurfaceWindow surf x y
-      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+      bkShowSurface (appBackend app) surf
       resizeSurfaceWindow surf (ceiling mw + 4) (ceiling mh + 4)
 
 -- | SNI tooltip surface (EWMH TOOLTIP): shows the pending hover
@@ -401,7 +369,7 @@ drawTooltipSurface app = do
       -- show FIRST, then resize/move: xmonad restores a re-mapped
       -- float's geometry from its float map, discarding resizes that
       -- happened while the window was withdrawn (popup pattern)
-      forM_ (trayDisplay env) $ \dpy -> showSurface dpy surf
+      bkShowSurface (appBackend app) surf
       resizeSurfaceWindow surf (floor winW + 2) (floor contentH + 2)
       moveSurfaceWindow surf x0 y0
       withImVec4 (thMenuBg theme) $ \bgPtr ->
@@ -420,7 +388,7 @@ drawTooltipSurface app = do
               textWrapped l
           end
           popStyleColor 2
-    _ -> forM_ (trayDisplay env) $ \dpy -> hideSurface dpy surf
+    _ -> bkHideSurface (appBackend app) surf
   where
     tooltipFlags = foldl1 combineFlags
       [ ImGuiWindowFlags_NoTitleBar
@@ -447,7 +415,7 @@ drawCenterSurface :: AppState -> IO ()
 drawCenterSurface app = do
   let surf = surfacesCenter (appSurfaces app)
       tState = appNotify app
-  forM_ (trayDisplay (appTray app)) $ \dpy -> showSurface dpy surf
+  bkShowSurface (appBackend app) surf
   state <- readTVarIO tState
   let config = notiConfig state
       width = configWidth config

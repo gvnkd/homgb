@@ -8,6 +8,7 @@ import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Word (Word32)
 
+import Homgb.Backend (Backend)
 import Homgb.Bar (BarState, newBarState)
 import Homgb.Keyboard (KeyboardEnv)
 import Homgb.Monitors (Monitor)
@@ -17,7 +18,10 @@ import Homgb.Theme (Theme)
 import Homgb.Tray (TrayEnv)
 
 data AppState = AppState
-  { appNotify :: TVar NotifyState
+  { appBackend :: Backend
+    -- ^ platform seam (design_docs/wayland.md): every X/Wayland
+    -- touchpoint reaches the render loop through this record
+  , appNotify :: TVar NotifyState
   , appTextures :: TVar (Map.Map Int GLuint)
     -- ^ GL textures for notification images, keyed by notiId
   , appHeights :: TVar (Map.Map Int Float)
@@ -52,10 +56,10 @@ data AppState = AppState
     -- ^ push a user event on the SDL queue (see appUserEvent)
   }
 
-initialAppState :: TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
+initialAppState :: Backend -> TVar NotifyState -> TrayEnv -> Maybe KeyboardEnv
                 -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
                 -> Word32 -> IO () -> IO AppState
-initialAppState tState tray kb surfaces screenSize monitors theme centerVisible userEv wake = do
+initialAppState backend tState tray kb surfaces screenSize monitors theme centerVisible userEv wake = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
@@ -64,7 +68,8 @@ initialAppState tState tray kb surfaces screenSize monitors theme centerVisible 
   barTick <- newTVarIO 0
   strut <- newTVarIO Nothing
   return AppState
-    { appNotify = tState
+    { appBackend = backend
+    , appNotify = tState
     , appTextures = textures
     , appHeights = heights
     , appTray = tray

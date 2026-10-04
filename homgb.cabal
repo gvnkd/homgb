@@ -32,9 +32,11 @@ library
                       , Homgb.Tray.Menu.Client
                       , Homgb.Tray.Menu.Tree
                       , Homgb.Tray.Menu.Render
-                      , Homgb.Keyboard
-                      , Homgb.Keyboard.Xcb
-                      , Homgb.Control
+                       , Homgb.Keyboard
+                       , Homgb.Keyboard.Xcb
+                       , Homgb.Backend
+                       , Homgb.Backend.X11
+                       , Homgb.Control
   build-depends:       base >= 4.7 && < 5
                       , bytestring
                       , sdl3-bindgen-sys >= 0.0.0.3 && < 0.0.1

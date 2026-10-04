@@ -17,6 +17,54 @@
 
 # homgb
 
+## Wayland / river (2026-10-04)
+
+- Sergey switched the VM to river + mgsloan's xmonad-on-river fork
+  (module ~/work/nix.config/modules/xmonad-river.nix, rev
+  dec3b72d). The fork IS the WM (river-window-management-v1); its
+  README.river.md: no libwayland dep, prompts are layer-shell clients,
+  "real keyboard input, workspace switching not run" yet.
+- Plan: design_docs/wayland.md. Architecture decision: homgb does NOT
+  learn Wayland protocols; xmonad owns all WM state and exposes it over
+  a new dbus API org.xmonad.WM (signals WorkspacesChanged/
+  WindowsChanged/LayoutChanged/FocusChanged; methods SwitchWorkspace/
+  FocusWindow/NextLayout/SetLayoutGroup/PlaceSurface). homgb stays a
+  plain SDL3 Wayland client (per-surface app_id); surface placement =
+  xmonad floats via PlaceSurface; struts become an xmonad layout
+  margin. XKB gap: river holds the seat state; xmonad applies switches
+  (river keyboard-layout, VERIFY on pinned river 0.4.5) and tracks the
+  group. XEmbed: SNI-only under Wayland.
+- xmonad-side dbus service DONE (2026-10-04,
+  omgbebebe/xmonad@xmonad-on-river b5ef196): XMonad.River.DBus owns
+  org.xmonad.WM, signals WorkspacesChanged a{s(bb)} / WindowsChanged
+  a(ssssb) / FocusChanged (ss) / LayoutChanged (ias), methods
+  SwitchWorkspace/FocusWindow/NextLayout/SetLayoutGroup/PlaceSurface.
+  Emission = self-requeuing afterLayout snapshot diff + 1s fallback
+  timer; handlers re-enter via postAction. Window handle on the wire =
+  river's stable identifier hex string, NOT the ObjectId. dcSetGroup
+  has NO default backend (session policy — riverctl/keyboard-layout
+  wasn't found in the river 0.4.5 nix output; decide with Sergey).
+  Local checkout: ~/work/dev/xmonad-river (cabal build works with
+  env-wrap; push via git@github.com:omgbebebe/xmonad.git — the default
+  id_ed25519 key; HTTPS origin HANGS on credential prompt).
+  tests/headless-dbus.sh = end-to-end proof (headless river +
+  dbus-run-session + busctl; foot provides a toplevel). Fork API facts
+  that shape the homgb client: W.peek takes the StackSet (not a Stack);
+  W.workspaces returns [Workspace] (use W.tag); NextLayout is a
+  constructor of ChangeLayout; dbus tuples IsVariant up to 11; busctl
+  monitor prints Member= capitalized and races signal bursts — attach
+  unfiltered before starting the WM.
+- Step 1 (seam) DONE: Homgb.Backend record + Homgb.Backend.X11
+  (selectBackend, HOMGB_BACKEND env); all X touchpoints in Homgb.hs/
+  Render.hs route via appBackend. X11 behavior unchanged (smoke test
+  on the river VM: homgb ran as XWayland client — daemon/SNI/XEmbed
+  fine, bar empty as expected since river has no EWMH).
+- Smoke-test gotcha: on the river session XWayland root spans BOTH
+  outputs (3840x1080) and river/xmonad-river places X clients wherever
+  the WM wants — homgb surfaces appear at odd spots; that's the hybrid
+  setup, not a regression. pkill -f 'homgb' matched the wrapper shell
+  (timeout) — use the binary path pattern.
+
 ## Flake packaging (nix build / nix run github:gvnkd/homgb)
 
 - `nix/` holds per-dependency pins (callHackageDirect) for what
