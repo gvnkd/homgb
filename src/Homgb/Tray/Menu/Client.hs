@@ -16,8 +16,9 @@ import Data.Word (Word32)
 import Data.Int (Int32)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
-import DBus
+import DBus hiding (Variant)
 import DBus.Client
+import DBus.Internal.Types (Value(..), Variant(..))
 
 menuInterface :: InterfaceName
 menuInterface = interfaceName_ "com.canonical.dbusmenu"
@@ -75,7 +76,9 @@ sendClicked client name path itemId timestamp = do
   void $ menuCall client name path (memberName_ "Event")
     [ toVariant itemId
     , toVariant ("clicked" :: String)
-    , toVariant (0 :: Word32)
+      -- dbusmenu's signature is Event(iisvu): the data argument is a
+      -- VARIANT. A bare uint32 (isuu) is silently ignored by steam.
+    , Variant (ValueVariant (toVariant (0 :: Word32)))
     , toVariant timestamp
     ]
 

@@ -174,6 +174,23 @@
   verify the target's workspace first. dbus-run-session teardown
   hangs after river gets SIGKILL'd from a script — outer timeout +
   pkill cleanup always.
+- MENU CLICKS ROOT CAUSE (2026-10-04, homgb a60142a): the menu
+  outside-click detector polled XQueryPointer on trayDisplay —
+  XWayland is BLIND over native Wayland surfaces, so the pointer
+  read as (0,0) forever: every item press computed "outside" and
+  CLOSEMENU swallowed the click (steam Exit did nothing). Fix:
+  bkPressEdge backend hook — X11 keeps XQueryPointer (global, sees
+  foreign windows); Wayland uses SDL button state (valid over
+  homgb's own surfaces; trade-off: clicking a FOREIGN window no
+  longer closes the menu — Wayland hides foreign input). Verified:
+  right-click opens the steam menu with all items; item-activation
+  click awaits Sergey's real mouse (ydotool absolute moves are
+  scaled by pointer accel — "disable mouse speed acceleration";
+  relative moves amplify too; SDL_GetGlobalMouseState only reports
+  over SDL surfaces, (0,0) elsewhere — homgb has HOMGB_PTRDEBUG 1Hz
+  probe now; ydotool: buttons are HEX masks, left click = C0, right
+  = C1, plain numbers are button INDICES (click 2 = middle!). wev
+  prints nothing until hovered — empty log ≠ broken events).
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —
