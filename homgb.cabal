@@ -85,5 +85,8 @@ executable homgb
   -- -threaded: the design relies on blocking C calls in DBus/X11/XCB
   -- threads coexisting with the SDL render loop (see architecture notes
   -- in .opencode/MEMORIES.md); without this they freeze the whole RTS.
-  ghc-options:         -Wall -O2 -threaded
+  -- -N2: a GL render thread spinning on short SDL waits otherwise
+  -- starves dbus signal dispatch on a single capability (observed:
+  -- addMatch succeeds, zero signals received).
+  ghc-options:         -Wall -O2 -threaded -with-rtsopts=-N2
 

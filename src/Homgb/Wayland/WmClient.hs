@@ -25,7 +25,8 @@ module Homgb.Wayland.WmClient
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-  (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
+  (TVar, modifyTVar', newTVarIO, readTVar, readTVarIO, writeTVar)
+import Control.Exception (SomeException, try)
 import Control.Monad (void)
 import Data.Int (Int32)
 import Data.Maybe (listToMaybe)
@@ -34,10 +35,11 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word64)
+import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 
 import DBus
-  (Variant, fromVariant, methodCall, methodCallBody
+  (Signal, Variant, fromVariant, methodCall, methodCallBody
   , methodCallDestination, parseMemberName, signalBody, signalMember
   , toVariant, variantType)
 import DBus.Client
@@ -76,14 +78,33 @@ startWmClient dirty wake = do
   nextId <- newTVarIO 1
   let wc = WmClient client wake ws wins foc layout ids nextId
   dbg <- lookupEnv "HOMGB_DEBUG"
-  _ <- addMatch client matchAny { matchInterface = Just "org.xmonad.WM" }
-         $ \sig -> do
-    let body = signalBody sig
-    case dbg of
-      Just _ -> hPutStrLn stderr
-        ("homgb: wm: signal " ++ show (signalMember sig))
-      Nothing -> return ()
-    case signalMember sig of
+  subResult <- try
+    (addMatch client matchAny { matchInterface = Just "org.xmonad.WM" }
+       (\sig -> do
+          r <- try (handleSignal dbg dirty wake ws wins foc layout sig)
+            :: IO (Either SomeException ())
+          case r of
+            Left e -> hPutStrLn stderr
+              ("homgb: wm: handler exc: " ++ show e)
+            Right () -> return ()))
+  case subResult of
+    Left e -> hPutStrLn stderr
+      ("homgb: wm: addMatch FAILED: " ++ show (e :: SomeException))
+    Right _ -> hPutStrLn stderr "homgb: wm: subscribed to org.xmonad.WM"
+  return wc
+
+handleSignal :: Maybe String -> TVar Bool -> IO ()
+             -> TVar [(T.Text, Bool, Bool)]
+             -> TVar [(T.Text, T.Text, T.Text, T.Text, Bool)]
+             -> TVar (T.Text, T.Text) -> TVar LayoutState
+             -> Signal -> IO ()
+handleSignal dbg dirty wake ws wins foc layout sig = do
+  let body = signalBody sig
+  case dbg of
+    Just _ -> hPutStrLn stderr
+      ("homgb: wm: signal " ++ show (signalMember sig))
+    Nothing -> return ()
+  case signalMember sig of
       "WorkspacesChanged" -> case listToMaybe body of
         Just v | Just x <- fromVariant v -> atomically (writeTVar ws x) >> markDirty
         _ -> parseWarn "WorkspacesChanged" body
@@ -104,7 +125,6 @@ startWmClient dirty wake = do
           markDirty
         _ -> parseWarn "LayoutChanged" body
       _ -> return ()
-  return wc
   where
     markDirty = atomically (writeTVar dirty True) >> wake
     parseWarn name body = hPutStrLn stderr
@@ -167,7 +187,13 @@ wmKbUi :: WmClient -> KbUi
 wmKbUi wc = KbUi
   { kbUiState = wcLayout wc
   , kbUiRotate = wmNextLayout wc
-  , kbUiPoll = return False
+  , kbUiPoll = do
+      -- keep lsQueriedAt fresh: nextDeadline adds 1s to it, and a
+      -- stale value is a deadline in the past — waitMs clamps to 1ms
+      -- and the render loop spins (dbus dispatch starves on -N1)
+      now <- getCurrentTime
+      atomically $ modifyTVar' (wcLayout wc) (\st -> st { lsQueriedAt = now })
+      return False
   , kbUiSyncFocus = \_ -> return False
   }
 

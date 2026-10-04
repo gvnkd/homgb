@@ -130,6 +130,21 @@
   — instrumented (HOMGB_DEBUG "menu click item=" in Tray/Menu/Render
   and "menu Event clicked" in Menu/Client); awaiting Sergey's log to
   see whether ImGui sees the click or the dbus Event is the dead half.
+- PANEL ROUND 4 (2026-10-04, fork cbb911a, homgb 3e51241, nix.config
+  ab88fca): (1) workspace order rotates per switch — W.workspaces puts
+  CURRENT first; signal now ordered by the CONFIG's workspace list.
+  (2) "Bar at vertical center, clock only" — two suspicions, one fix:
+  applySurfaces matched against riverWindows INCLUDING closed entries
+  (ids recycled — a restarted panel floats a DEAD window; live one
+  stays tiled as Tall's second column; workspaces empty is a separate
+  open question). Fixed: rwClosed filter + object ids in float logs +
+  known-window dump in the no-match warn. homgb WmClient now logs
+  every signal receipt (HOMGB_DEBUG). NEXT DATA: after rebuild,
+  wayland-session.log's "known:" dump + homgb's "wm: signal" lines.
+  MENU CLICKS still unresolved (ydotool works: daemon needs sudo,
+  socket /tmp/ydo.sock, `YDOTOOL_SOCKET=... ydotool mousemove/click`
+  — nixpkgs#ydotool; XAUTHORITY error seen when X tools leak into
+  env).
 - LIVE SESSION VERIFIED (2026-10-04): after session recreate, the WM
   owns org.xmonad.WM; busctl SwitchWorkspace s 5 returned rc=0 and the
   next WorkspacesChanged showed "5" current with "1" nonEmpty —
