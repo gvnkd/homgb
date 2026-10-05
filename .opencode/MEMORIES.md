@@ -17,6 +17,84 @@
 
 # homgb
 
+## HDR prototype (2026-10-05, wlroots + river patches)
+
+- Display: LG C1 65" on card1-HDMI-A-1 (only connected output; DPs dead).
+  EDID has ST2084 + static metadata type 1 + BT2020; driver exposes
+  HDR_OUTPUT_METADATA + Colorspace BT2020_RGB + vrr_capable=1. Full HDR
+  chain viable on NVIDIA 595 proprietary.
+- HDR needs wlroots' VULKAN renderer (GLES lacks input_color_transform →
+  river skips wp_color_manager_v1). Session exports WLR_RENDERER=vulkan;
+  verified wp_color_manager_v1 v2 live on the session.
+- SDR→HDR expansion (gamescope's BT.2446a ITM) ported into wlroots 0.20
+  Vulkan output pipe: patches/wlroots-itm.patch in nix.config (output.frag
+  + pass.c + renderer.c + vulkan.h; env WLR_HDR_ITM_ENABLE, _SDR_NITS=203,
+  _TARGET_NITS=1000). river toggle: patches/river-hdr.patch (WLR_RIVER_HDR=1
+  → PQ/BT2020 image description, gated on supported_transfer_functions).
+  Both wired via overlays in modules/xmonad-river.nix (river-hdr pkg,
+  session env exports). ITM math validated in C: black→0, white→target,
+  monotonic; known ~5% dip at fast-path polynomial junction (inherited
+  from gamescope). NOT yet verified end-to-end on the TV (needs session
+  restart). Prototype artifacts in /tmp/opencode (wlroots-src, river-0.4.5,
+  itm_test.c, tinywl harness with TINYWL_HDR=1).
+- Nested/headless backends REJECT image descriptions ("basic output test
+  failed") — HDR testing needs a real KMS HDR output; tinywl trick works
+  only on DRM.
+- BURN FIX (2026-10-05, live on the C1): chromium sees the HDR output and
+  sends PQ/BT.2020 color-managed surfaces; wlroots decodes them to linear
+  in the texture pass and the output-stage ITM expanded them AGAIN →
+  burned images. Fix: per-frame gate — wlr_scene scans the render list for
+  HDR-terms buffers (TF PQ or ext_linear, primaries BT2020; sRGB/gamma
+  tags still count as SDR and ARE expanded), passes
+  has_hdr_content via wlr_buffer_pass_options, vulkan pass skips ITM when
+  set. Known tradeoff: one HDR surface disables expansion for the whole
+  frame (per-surface ITM would need texture-pass integration).   If BT.2446a
+  aesthetics still displease, next step is a linear luminance-boost mode
+  (KWin sdrbrightness-style) in output.frag.
+- LIVE ON THE C1 (2026-10-05, VERIFIED): log shows "HDR toggle: enabled=true
+  supported_transfer_functions=0x2" + "HDR ITM: expanding (hdr_content=0)"
+  for SDR and "pass-through (hdr_content=1)" with color-managed surfaces
+  (chromium). TWO ordering bugs cost rounds: (1) image description must be
+  set BEFORE scene_output.buildState() — after it, the scene's combine
+  diff-suppression never picks it up (frames stayed gamma22-encoded while
+  the TV was in PQ mode = "burned colors"); (2) the running session keeps
+  the OLD river/wlroots until re-login — always verify via pgrep + strings
+  on the running binary's libwlroots, not just nixos-rebuild switch.
+  nix.config builds river/wlroots from PATCHES in nix.config/patches/ —
+  editing /tmp/opencode sources does nothing until the patch file is
+  regenerated (git diff in river-git / wlr-git pristine-first repos).
+- PER-SURFACE ITM (2026-10-05, second iteration, switched in f2595fd):
+  expansion moved from the output pipe into the Vulkan TEXTURE shader
+  (texture.frag bt2446a branch, push constants itm_sdr/target_nits in
+  wlr_vk_frag_texture_pcr_data, new wlr_render_texture_options
+  hdr_expand_* fields). Scene (wlr_scene.c render_data) enables it only
+  when the output image description is PQ; per-buffer gate: PQ/ext_linear
+  TF or BT2020 primaries skip expansion. Blend-scale math: rgb(1.0=SDR
+  white=203nits) -> bt2446a(rgb*(203/sdr),sdr,target)*(target/203) —
+  the output.frag hdr_itm wrapper must NOT be reused (absolute scale).
+  Output-stage ITM is now legacy, gated by WLR_HDR_ITM_OUTPUT (default
+  OFF; WLR_HDR_ITM_ENABLE drives per-surface only). Fullscreen PQ video
+  can direct-scanout (bypasses renderer, true HDR); SDR never scans out
+  on a PQ output so it always goes through the expanding texture path.
+  Scene rects/background are NOT expanded (xmonad root is black anyway).
+- FULLSCREEN (2026-10-05, fork 663a0b6, pushed, nix.config wqz44s):
+  client fullscreen requests honored end to end. New ops OpFullscreen /
+  OpExitFullscreen (Plan.hs) executed in the manage sequence (WM.hs):
+  river_window_v1.fullscreen(hinted-or-screen-matched output) +
+  inform_fullscreen / exit_fullscreen + inform_not_fullscreen. Output
+  matched by position like nominateLayerOutput; repeated requests
+  suppressed by capturing rwFullscreen BEFORE adjust (adjust lands before
+  the queued action reads it). e2e proof: /tmp/opencode/fullscreen-test.c
+  asserts the fullscreen state (value 2) in xdg_toplevel.configure both
+  directions — river only sets it when the WM honors the request.
+  GOTCHAS: headless wl_display name is auto wayland-N (WAYLAND_DISPLAY is
+  the PARENT for the wayland backend, ignored otherwise — stale locks
+  shift N; check $RT dir); river needs WLR_BACKENDS=headless explicitly
+  when the launching shell has WAYLAND_DISPLAY set (autocreate nests
+  instead); wl_buffer.release needs a non-NULL listener.
+  headless-dbus.sh 7/7 still pass. REMAINING: no WM-INITIATED fullscreen
+  op exported to configs (e.g. a Meta+f binding).
+
 ## Wayland / river (2026-10-04)
 
 - Sergey switched the VM to river + mgsloan's xmonad-on-river fork
