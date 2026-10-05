@@ -26,6 +26,7 @@ import System.IO (hPutStrLn, stderr)
 import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
 import Homgb.Bar (barCovered)
+import Homgb.Battery (BatteryEnv(..), BatteryState(..), startBattery)
 import Homgb.Backend (bkHideSurface, bkMonitors, bkName, bkScreenSize
   , bkShowSurface, bkStartBarEvents, bkStartEmbedHost, bkStartKeyboard
   , bkTagSurface)
@@ -65,6 +66,7 @@ run = do
   backend <- selectBackend (trayDisplay tray) barDirty wake
   hPutStrLn stderr $ "homgb: backend: " ++ bkName backend
   kb <- bkStartKeyboard backend config wake
+  bat <- startBattery config
   screen <- bkScreenSize backend
   monitors <- bkMonitors backend
   centerVisible <- newTVarIO False
@@ -111,7 +113,7 @@ run = do
   SDL3.hideWindow (sWindow menuSurf)
   SDL3.hideWindow (sWindow centerSurf)
   SDL3.hideWindow (sWindow tooltipSurf)
-  app <- initialAppState backend tState tray kb
+  app <- initialAppState backend tState tray kb bat
     (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf) screen
     monitors theme centerVisible barDirty userEv wake
   bkStartBarEvents backend (appBarDirty app) wake
@@ -175,9 +177,9 @@ mainLoop app = do
     [show sawEvents, show shouldQuit]
   unless shouldQuit $ do
     up <- frameUpkeep app
-    debugEnv "mainloop: upkeep expired=%s kb=%s bar=%s ptr=%s"
+    debugEnv "mainloop: upkeep expired=%s kb=%s bar=%s bat=%s ptr=%s"
       [show (upExpired up), show (upKbChanged up), show (upBarChanged up)
-      , show (upPointerMoved up)]
+      , show (upBatChanged up), show (upPointerMoved up)]
     state <- readTVarIO (appNotify app)
     let config = notiConfig state
         notis = notiStList state
@@ -189,7 +191,7 @@ mainLoop app = do
           && any (\n -> notiId n `Map.notMember` heights) notis
         changed = sawEvents
           || upExpired up || upKbChanged up || upBarChanged up
-          || upPointerMoved up || popUnmeasured
+          || upBatChanged up || upPointerMoved up || popUnmeasured
     -- an open menu runs its own ~20Hz poll loop (outside-click close
     -- detection via XQueryPointer edges in renderMenus): it must
     -- render on the menu DEADLINE (nextDeadline adds 50ms), not only
@@ -268,6 +270,11 @@ nextDeadline app = do
       s <- readTVarIO (kbUiState kb)
       return (realToFrac (utcTimeToPOSIXSeconds (lsQueriedAt s)) + 1)
     Nothing -> return far
+  batD <- case appBattery app of
+    Just be -> do
+      s <- readTVarIO (batState be)
+      return (batQueriedAt s + fromIntegral (batInterval be))
+    Nothing -> return far
   tipD <- do
     mTip <- readTVarIO (trayTooltip (appTray app))
     case mTip of
@@ -302,7 +309,7 @@ nextDeadline app = do
       cap = now + (if followAny then 0.1 else 0.25)
       clock = fromInteger ((floor (now / 60) + 1) * 60) :: POSIXTime
       expiries = [ expiryAt config n | n <- notiStList state ]
-  return (foldl' min cap (clock : lastBar + 5 : kbD : tipD : embedD
+  return (foldl' min cap (clock : lastBar + 5 : kbD : batD : tipD : embedD
     : menuD : expiries))
   where
     far = 1e12 :: POSIXTime

@@ -172,6 +172,15 @@ data Config = Config
   , configBarStrutGap :: Int
     -- ^ extra pixels reserved below the bar surface (layout mode):
     --   strut depth = surface height + gap; 0 = windows touch the bar
+  , configBarBattery :: Bool
+    -- ^ battery widget (percent + current draw) left of the layout
+    --   indicator; renders nothing on nodes without a battery
+  , configBarBatteryDevice :: String
+    -- ^ power_supply device name (e.g. "BAT0"); empty = auto-detect
+    --   the first Battery-type entry
+  , configBarBatteryInterval :: Int
+    -- ^ seconds between sysfs polls (capacity moves in 1% steps and
+    --   the loop wakes for the XKB poll anyway, so ~10s is free)
 
   -- keyboard
   , configKbLayouts :: [String]
@@ -337,6 +346,12 @@ instance FromJSON Config where
     <*> secondLevel o "bar" "struts" True
   -- configBarStrutGap
     <*> secondLevel o "bar" "strut-gap" 0
+  -- configBarBattery
+    <*> secondLevel o "bar" "battery" True
+  -- configBarBatteryDevice
+    <*> secondLevel o "bar" "battery-device" ""
+  -- configBarBatteryInterval
+    <*> secondLevel o "bar" "battery-interval" 10
   -- configKbLayouts
     <*> secondLevel o "keyboard" "layouts" []
   -- configKbIndicator
@@ -527,6 +542,9 @@ defaultConfigText = Text.pack $ unlines
   , "  window-title-max: 200"
   , "  struts: true"
   , "  strut-gap: 0"
+  , "  battery: true"
+  , "  battery-device: \"\""
+  , "  battery-interval: 10"
   , "theme:"
   , "  font:"
   , "    family: \"Noto Sans\""

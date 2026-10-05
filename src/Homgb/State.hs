@@ -10,6 +10,7 @@ import Data.Word (Word32)
 
 import Homgb.Backend (Backend)
 import Homgb.Bar (BarState, newBarState)
+import Homgb.Battery (BatteryEnv)
 import Homgb.Keyboard (KbUi)
 import Homgb.Monitors (Monitor)
 import Homgb.Notifications.Daemon (NotifyState)
@@ -30,6 +31,9 @@ data AppState = AppState
   , appKeyboard :: Maybe KbUi
     -- ^ the keyboard indicator/control slice (xcb-backed on X11,
     -- WM-signal-backed on Wayland)
+  , appBattery :: Maybe BatteryEnv
+    -- ^ sysfs battery slice (bar.battery); Nothing when disabled or
+    -- the node has no battery — no widget, no deadline then
   , appSurfaces :: Surfaces
   , appScreenSize :: (Int, Int)
     -- ^ primary X screen size, fallback monitor geometry
@@ -61,9 +65,10 @@ data AppState = AppState
   }
 
 initialAppState :: Backend -> TVar NotifyState -> TrayEnv -> Maybe KbUi
+                -> Maybe BatteryEnv
                 -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
                 -> TVar Bool -> Word32 -> IO () -> IO AppState
-initialAppState backend tState tray kb surfaces screenSize monitors theme centerVisible barDirty userEv wake = do
+initialAppState backend tState tray kb bat surfaces screenSize monitors theme centerVisible barDirty userEv wake = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
@@ -78,6 +83,7 @@ initialAppState backend tState tray kb surfaces screenSize monitors theme center
     , appHeights = heights
     , appTray = tray
     , appKeyboard = kb
+    , appBattery = bat
     , appSurfaces = surfaces
     , appScreenSize = screenSize
     , appMonitors = monitors

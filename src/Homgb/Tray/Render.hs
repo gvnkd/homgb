@@ -41,6 +41,8 @@ import Homgb.Bar
   , measureWorkspaces, measureWinButtons, renderSep, sepWidth
   , centerCursorY
   , sameLineS, framePadX, framePadY )
+import Homgb.Battery
+  ( BatteryEnv(..), BatteryState(..), batteryLabel, batteryTooltip )
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Keyboard (KbUi(..), currentLayout)
@@ -136,21 +138,21 @@ offerTooltip env key tipLines (wx, wy) = do
 -- content size so the caller can shrink-wrap the SDL window. In bar
 -- layout mode the surface spans the full monitor width instead.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Theme
-           -> Maybe KbUi -> Ptr () -> Maybe BarSection
+           -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
            -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTray env textures config theme kbEnv mainFont mBar surfSize winPos screenSize
+renderTray env textures config theme kbEnv mBat mainFont mBar surfSize winPos screenSize
   | configBarLayout config =
-      renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
+      renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
         winPos screenSize
   | otherwise =
-      renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
+      renderTrayLegacy env textures config theme kbEnv mBat mainFont mBar surfSize
         winPos screenSize
 
 -- | Legacy shrink-wrapped corner tray.
 renderTrayLegacy :: TrayEnv -> TrayTextures -> Config -> Theme
-                 -> Maybe KbUi -> Ptr () -> Maybe BarSection
+                 -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
                  -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
+renderTrayLegacy env textures config theme kbEnv mBat mainFont mBar surfSize
                  winPos screenSize = do
   state <- readTVarIO (trayState env)
   dbg0 <- lookupEnv "HOMGB_DEBUG"
@@ -186,7 +188,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
     withImVec2 pivot $ \pivotPtr ->
       Raw.setNextWindowPos posPtr ImGuiCond_Always (Just pivotPtr)
   -- transparent window bg: only the icons/label should be visible
-  (kbW, barW) <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
+  (kbW, batW, barW) <- withImVec4 (ImVec4 0 0 0 0) $ \bgPtr ->
     withImVec2 (ImVec2 (thTrayPadX theme) (thTrayPadY theme)) $ \padPtr -> do
       Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
       Raw.pushStyleVar ImGuiStyleVar_WindowPadding padPtr
@@ -194,7 +196,7 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
         (realToFrac (thBarBorderSize theme))
       beginVisible <- BS.useAsCString "homgb-tray"
         $ \label -> Raw.begin label Nothing (Just trayFlags)
-      (kbWidth, barWidth) <- if beginVisible
+      (kbWidth, batWidth, barWidth) <- if beginVisible
         then do
           barW0 <- case mBar of
             Just (BarSection barT acts) -> do
@@ -218,14 +220,15 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
               then sameLineS barItemGap
               else sameLineS traySpacing
             withImVec2 (ImVec2 itemW' btn) $ \szPtr -> Raw.dummy szPtr
+          batW0 <- renderBattery env mBat theme traySpacing (nAll > 0) winPos
           kbW0 <- renderIndicator env kbEnv (configKbIndicator config) theme
-            traySpacing mainFont btn (nAll > 0) winPos
-          return (kbW0, barW0)
-        else return (0, 0)
+            traySpacing mainFont btn (nAll > 0 || batW0 > 0) winPos
+          return (kbW0, batW0, barW0)
+        else return (0, 0, 0)
       end
       Raw.popStyleVar 2
       popStyleColor 1
-      return (kbWidth, barWidth)
+      return (kbWidth, batWidth, barWidth)
   -- Analytic size: ImGui windows are clipped to the host viewport
   -- (the SDL window), so measuring the window size inside feeds back
   -- and collapses it. The layout is fully determined instead: an
@@ -236,11 +239,12 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
   -- 8 old ItemSpacing).
   let n = length items + length embeds
       gaps = fromIntegral (max 0 (n - 1)) * traySpacing
-      gapKb = if n > 0 && kbW > 0 then traySpacing else 0
+      gapBat = if n > 0 && batW > 0 then traySpacing else 0
+      gapKb = if (n > 0 || batW > 0) && kbW > 0 then traySpacing else 0
       gapBar = if n > 0 && barW > 0 then barItemGap else 0
       itemW = btn + 2 * framePadX
       trayW = 2 * thTrayPadX theme + barW + gapBar
-        + fromIntegral n * itemW + gaps + gapKb + kbW
+        + fromIntegral n * itemW + gaps + gapBat + batW + gapKb + kbW
       h = btn + 2 * framePadY + 2 * thTrayPadY theme
   -- XEmbed icon slots: the foreign windows are children of the tray
   -- surface; position them where the dummy reservations landed. The
@@ -267,13 +271,13 @@ renderTrayLegacy env textures config theme kbEnv mainFont mBar surfSize
 -- | Full-width bar layout (the xmobar replacement), left to right:
 -- workspaces, active window title (capped at bar.window-title-max
 -- px), taskbar window buttons (bar.windows), an h-spacer, then the
--- right group: tray icons, keyboard indicator, date "dd.mm", clock
--- "HH:MM" (rightmost). Returns (monitor width, height) — the caller sizes the
--- surface to the full monitor width.
+-- right group: tray icons, battery, keyboard indicator, date "dd.mm",
+-- clock "HH:MM" (rightmost). Returns (monitor width, height) — the
+-- caller sizes the surface to the full monitor width.
 renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
-              -> Maybe KbUi -> Ptr () -> Maybe BarSection
+              -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
               -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
+renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
               winPos screenSize@(monW, _) = do
   state <- readTVarIO (trayState env)
   embeds <- if configTrayXEmbed config
@@ -327,7 +331,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
         beginVisible <- BS.useAsCString "homgb-tray"
           $ \label -> Raw.begin label Nothing (Just trayFlags)
         when beginVisible $
-          renderRow env textures config theme kbEnv mainFont mBar items
+          renderRow env textures config theme kbEnv mBat mainFont mBar items
             embeds iconSize btn traySpacing sects surfSize winPos screenSize
         end
         Raw.popStyleVar 2
@@ -368,6 +372,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
         Just (BarSection barT _) -> measureWinButtons barT config
         Nothing -> return 0
       kbW <- measureIndicator
+      batW <- measureBattery mBat
       titleNatural <- case mBar of
         Just (BarSection barT _) -> do
           s <- readTVarIO barT
@@ -392,7 +397,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
       let hasWs = wsW > 0
           hasTitle = titleNatural > 0
           hasWin = winW > 0
-          rightFlags = [iconsW > 0, kbW > 0, clockW > 0, dateW > 0]
+          rightFlags = [iconsW > 0, batW > 0, kbW > 0, clockW > 0, dateW > 0]
           rightN = length (filter id rightFlags)
           rightGaps = fromIntegral (max 0 (rightN - 1))
           -- separators between the left sections themselves
@@ -400,7 +405,7 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
             + (if (hasWs || hasTitle) && hasWin then 1 else 0) :: Int
           crossSepW = fromIntegral crossSeps * sw
           fixedLeft = wsW + winW + crossSepW
-          rightTotal = iconsW + kbW + clockW + dateW + rightGaps * gap
+          rightTotal = iconsW + batW + kbW + clockW + dateW + rightGaps * gap
           -- the right group's left edge, anchored to the right pad;
           -- the ONLY placement authority — renderRow draws the group
           -- at exactly this x and the XEmbed slots use it too
@@ -409,7 +414,8 @@ renderTrayBar env textures config theme kbEnv mainFont mBar surfSize
           titleW = min titleNatural (max 0 titleAvail)
           left = filter fst [ (wsW > 0, wsW), (hasTitle, titleW)
                             , (winW > 0, winW) ]
-          right = filter fst [ (iconsW > 0, iconsW), (kbW > 0, kbW)
+          right = filter fst [ (iconsW > 0, iconsW), (batW > 0, batW)
+                             , (kbW > 0, kbW)
                              , (dateW > 0, dateW), (clockW > 0, clockW) ]
       return (SectionLayout left right titleW rightX)
     measureIndicator = case kbEnv of
@@ -445,11 +451,11 @@ data SectionLayout = SectionLayout
 -- text metrics vary), so anything right of the spacer shifted with
 -- the title while the analytically-placed XEmbed icons stood still.
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
-          -> Maybe KbUi -> Ptr () -> Maybe BarSection
+          -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
           -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
           -> SectionLayout
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
-renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize btn
+renderRow env textures config theme kbEnv mBat mainFont mBar items embeds iconSize btn
           traySpacing sects surfSize winPos screenSize = do
   let secFlag i = maybe False fst (atSec i)
       atSec i =
@@ -520,13 +526,49 @@ renderRow env textures config theme kbEnv mainFont mBar items embeds iconSize bt
   -- tray the whole group then sticks to the title instead of the
   -- right edge. The left sections (ws/title/win) must NOT set follow:
   -- they are not on the anchored line.
+  batW <- renderBattery env mBat theme traySpacing (n > 0) winPos
   indW <- renderIndicator env kbEnv (configKbIndicator config) theme
-            traySpacing mainFont btn (n > 0) winPos
-  let afterInd = n > 0 || indW > 0
+            traySpacing mainFont btn (n > 0 || batW > 0) winPos
+  let afterInd = n > 0 || batW > 0 || indW > 0
   dateW <- renderDateWidget theme traySpacing afterInd
   void $ renderClockWidget theme traySpacing (afterInd || dateW > 0)
   where
     rowH = btn + 2 * framePadY
+
+-- | Battery widget (config @bar.battery@): charge percent and current
+-- draw ("90% -12.3W"), left of the layout indicator. Plain text in the
+-- muted bar.date color — not a button, nothing to activate. The sysfs
+-- poll runs in frameUpkeep on the battery deadline; here we only read
+-- the cached TVar. `follow` gates the leading SameLine (see
+-- 'renderClockWidget'). Returns the content width (0 when no battery).
+renderBattery :: TrayEnv -> Maybe BatteryEnv -> Theme -> Float -> Bool
+              -> (Int, Int) -> IO Float
+renderBattery env mBat theme gap follow winPos = case mBat of
+  Just be -> do
+    s <- readTVarIO (batState be)
+    if not (batPresent s) then return 0 else do
+      when follow $ sameLineS gap
+      let label = batteryLabel s
+      withImVec4 (thBarDate theme) $ \colPtr -> do
+        Raw.pushStyleColor ImGuiCol_Text colPtr
+        text label
+        popStyleColor 1
+      offerTooltip env "battery" (batteryTooltip s) winPos
+      ImVec2 tw _ <- calcTextSize label True 0
+      return tw
+  Nothing -> return 0
+
+-- | Measure-only twin of 'renderBattery' for the bar's pre-Begin
+-- section math (the label is shared via 'batteryLabel', so the widths
+-- agree by construction).
+measureBattery :: Maybe BatteryEnv -> IO Float
+measureBattery mBat = case mBat of
+  Just be -> do
+    s <- readTVarIO (batState be)
+    if not (batPresent s) then return 0 else do
+      ImVec2 tw _ <- calcTextSize (batteryLabel s) True 0
+      return tw
+  Nothing -> return 0
 
 -- | Current-layout label at the tray edge (config @keyboard.indicator@).
 -- Clicking rotates layouts, same as the hotkey. The label is drawn at

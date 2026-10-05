@@ -43,6 +43,7 @@ import Homgb.Backend (BarUpkeep(..), bkBarActions, bkBarUpkeep
   , bkHideSurface, bkMoveSurface, bkPollPointer, bkPressEdge
   , bkShowSurface, bkUpdateStrut)
 import Homgb.Bar (BarSection(..))
+import Homgb.Battery (pollBattery)
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
@@ -69,6 +70,8 @@ data Upkeep = Upkeep
     -- ^ the 1s XKB group poll saw a different group
   , upBarChanged :: Bool
     -- ^ the EWMH bar state re-read produced different state
+  , upBatChanged :: Bool
+    -- ^ the battery sysfs poll (bar.battery-interval) saw new values
   , upPointerMoved :: Bool
     -- ^ the follow-mouse pointer poll moved
   }
@@ -121,6 +124,11 @@ frameUpkeep app = do
   kbChanged <- case appKeyboard app of
     Just kb -> kbUiPoll kb
     Nothing -> return False
+  -- battery sysfs poll, rate-limited internally by
+  -- bar.battery-interval (the loop wakes for it via nextDeadline)
+  batChanged <- case appBattery app of
+    Just be -> pollBattery be
+    Nothing -> return False
   -- The bar state and the z-order re-assert are EVENT-DRIVEN:
   -- the backend's event listener (X11: root property/structure
   -- selection) sets appBarDirty, and wakes the loop. We re-read only
@@ -147,6 +155,7 @@ frameUpkeep app = do
     { upExpired = not (null due)
     , upKbChanged = kbChanged || kbFocusChanged
     , upBarChanged = barChanged
+    , upBatChanged = batChanged
     , upPointerMoved = pointerMoved
     }
 
@@ -177,7 +186,7 @@ drawTraySurface app = do
   winPos <- SDL3.windowPosition (sWindow surf)
   mon <- monitorFor app config configTrayMonitor configTrayFollowMouse
   (w, h) <- renderTray (appTray app) (trayTextures (appTray app)) config theme
-    (appKeyboard app) (sMainFont surf)
+    (appKeyboard app) (appBattery app) (sMainFont surf)
     (if configBarWorkspaces config || configBarWindows config
        then Just (BarSection (appBar app) (bkBarActions (appBackend app)))
        else Nothing)

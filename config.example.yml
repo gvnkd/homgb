@@ -219,6 +219,21 @@ bar:
   # the bar's strip — app windows never overlap the bar.
   struts: true
 
+  # Battery widget left of the layout indicator: charge percent and
+  # current draw ("90% -12.3W"). Reads /sys/class/power_supply
+  # directly — no UPower needed. Renders nothing on battery-less
+  # nodes.
+  battery: true
+
+  # power_supply device name; empty = auto-detect the first
+  # Battery-type entry.
+  battery-device: ""
+
+  # Seconds between sysfs polls. Capacity moves in 1% steps and the
+  # render loop wakes ~1Hz for the keyboard poll anyway, so ~10s
+  # costs nothing.
+  battery-interval: 10
+
 # -------------------------------------------------------------------
 # Theming
 # -------------------------------------------------------------------

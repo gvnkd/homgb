@@ -562,9 +562,21 @@ SDL2 windowing, dear-imgui (OpenGL3) rendering. No Wayland in early milestones.
   xmonad's ewmh focuses the window AND views its workspace
   (W.focusWindow). _NET_WM_NAME is UTF-8 — decodeUtf8' via
   getWindowProperty8.
+- Battery widget (2026-10-05, Homgb.Battery): reads
+  /sys/class/power_supply/BAT* directly (no UPower/udev), deadline-
+  polled at bar.battery-interval (default 10s) via the kbD pattern —
+  batQueriedAt MUST be refreshed on every poll incl. failures (stale
+  deadline = 1ms spin, the lsQueriedAt lesson). power_now µW→W,
+  fallback current_now*voltage_now. Label "90% +30.4W" (sign =
+  status; watts hidden when Full/<0.05W), rendered in muted
+  bar.date color LEFT of the layout indicator in both layouts;
+  measureBattery shares batteryLabel with the render so the bar's
+  right-anchor math agrees. Config: bar.battery{,-device,-interval};
+  device "" = auto-detect first type=Battery. AppState.appBattery =
+  Maybe (Nothing = no widget/deadline).
 - Bar layout (bar.layout, default true): full-monitor-width surface,
-  widgets [workspaces][title][windows?][SPACER][icons][kb][clock HH:MM]
-  [date dd.mm]. The ImGui window MUST get an explicit setNextWindowSize
+  widgets [workspaces][title][windows?][SPACER][icons][battery][kb]
+  [date dd.mm][clock HH:MM]. The ImGui window MUST get an explicit setNextWindowSize
   — AlwaysAutoResize shrink-wraps DIRECT content only, so the
   SameLine-spacer-pushed right group clipped to nothing (silent
   debugging trap: a failed `cabal build` left a stale binary looking
