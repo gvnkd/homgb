@@ -94,6 +94,21 @@
   instead); wl_buffer.release needs a non-NULL listener.
   headless-dbus.sh 7/7 still pass. REMAINING: no WM-INITIATED fullscreen
   op exported to configs (e.g. a Meta+f binding).
+- UTF-8 TITLES (2026-10-05, fork ba89b7b, switched i13j7yp): river titles
+  are UTF-8 ByteStrings; BC.unpack/pack at the dbus boundary is LATIN-1 →
+  Cyrillic titles hit homgb as Ð¢ÐµÑ... mojibake. Fix: utf8ToString/
+  stringToUtf8 in Types.hs gating every crossing (DBus signals, panel
+  matching, PlaceSurface lookup, ManageHook title/className). Verified
+  headless via busctl monitor (Тест русского заголовка intact).
+  homgb side needs theme.font.cyrillic: true (GetGlyphRangesCyrillic in
+  the shim) AND a configured family (default = ImGui ProggyClean, no
+  Cyrillic regardless of the flag) — dropped ~/.config/homgb/config.yml
+  with DejaVu Sans + cyrillic. GOTCHA (again): river ignores
+  WAYLAND_DISPLAY for its own socket — it uses addSocketAuto and sets
+  WAYLAND_DISPLAY for its INIT CHILDREN; override it (e.g. hardcode in
+  init.sh) and clients connect nowhere. Also busctl monitor block-buffers:
+  only grep its output after the dbus session tears down, never after
+  SIGKILL of the compositor.
 
 ## Wayland / river (2026-10-04)
 
