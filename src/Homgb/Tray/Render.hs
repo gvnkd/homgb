@@ -35,7 +35,7 @@ import qualified DearImGui.Raw as Raw
   , pushStyleVar, popStyleVar, getMousePos, dummy, setCursorPos)
 import DearImGui.Raw.Font (Font(..))
 import Homgb.Bar
-  ( BarState, barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
+  ( barActiveTitle, fitTitleWidth, capTitleChars, renderClockWidget
   , BarSection(..), renderDateWidget, renderWinButtons
   , renderWorkspaces
   , measureWorkspaces, measureWinButtons, renderSep, sepWidth
@@ -47,7 +47,7 @@ import Homgb.Keyboard (KbUi(..), currentLayout)
 import Homgb.Theme (Theme(..))
 import Homgb.Tray (TrayEnv(..), TrayItem(..), TrayState(..), TooltipInfo(..))
 import Homgb.Tray.Embed (XEmbedIcon, pumpEmbedEvents, layoutEmbedIcons)
-import Homgb.Tray.Icons (iconRgbaSrc, orElseIO, attentionRgba, addOverlay)
+import Homgb.Tray.Icons (iconRgbaSrc, attentionRgba, addOverlay)
 import Homgb.Tray.Menu.Render (openItemMenu)
 
 -- | Tray icon texture cache: bus name -> (version, texture).

@@ -142,7 +142,6 @@ debugEnv fmt args = do
     printf [] _ = []
     printf ('%':'s':rest) (a:as) = a ++ printf rest as
     printf (c:rest) as = c : printf rest as
-    printf _ _ = ""
 
 withSurfaceContext :: IO () -> Surface -> IO ()
 withSurfaceContext action surf = do

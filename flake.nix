@@ -91,6 +91,7 @@
               dbus
 
               git
+              wayland-utils
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [

@@ -18,7 +18,7 @@ module Homgb.Backend.Wayland (waylandBackend) where
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, modifyTVar', readTVarIO, writeTVar)
-import Control.Monad (unless, void, when)
+import Control.Monad (unless)
 import Data.Bits ((.&.))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -30,19 +30,16 @@ import Foreign.Marshal.Array (peekArray0)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Linear (V2(..))
-import System.IO (hPutStrLn, stderr)
 
 import qualified Homgb.SDL3 as SDL3
 import SDL3.Sys.Bindgen.Rect (SDL_Rect(..))
 import SDL3.Sys.Mouse
   ( pattern SDL_BUTTON_LMASK, pattern SDL_BUTTON_RMASK
   , getGlobalMouseState, getMouseState)
-import SDL3.Sys.Video (SDL_DisplayID(..), getDisplayBounds, getDisplays)
+import SDL3.Sys.Video (getDisplayBounds, getDisplays)
 
 import Homgb.Backend
 import Homgb.Bar (BarActions(..), BarState(..), WinInfo(..))
-import Homgb.Config (Config)
-import Homgb.Keyboard (KbUi)
 import Homgb.Monitors (Monitor(..))
 import Homgb.Surface (Surface(..), surfaceWindowSize)
 import Homgb.Tray (TrayEnv(..), reapZombieItems)
@@ -99,7 +96,8 @@ pressEdgeSDL prevVar = do
     b <- getMouseState xPtr yPtr
     x <- peek xPtr
     y <- peek yPtr
-    return (realToFrac (x :: CFloat), realToFrac (y :: CFloat), b)
+    return (realToFrac (x :: CFloat) :: Double
+           ,realToFrac (y :: CFloat) :: Double, b)
   let left = (btns .&. SDL_BUTTON_LMASK) /= 0
       right = (btns .&. SDL_BUTTON_RMASK) /= 0
   atomically $ writeTVar prevVar (left, right)
@@ -193,9 +191,7 @@ sdlMonitors = do
       arr <- getDisplays nPtr
       if arr == nullPtr
         then return []
-        else do
-          n <- peek nPtr
-          peekArray0 0 arr
+        else peekArray0 0 arr
     bounds did = alloca $ \rPtr -> do
       ok <- getDisplayBounds did rPtr
       if not ok

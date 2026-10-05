@@ -25,7 +25,7 @@ module Homgb.Wayland.WmClient
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-  (TVar, modifyTVar', newTVarIO, readTVar, readTVarIO, writeTVar)
+  (TVar, modifyTVar', newTVarIO, readTVar, writeTVar)
 import Control.Exception (SomeException, try)
 import Control.Monad (void)
 import Data.Int (Int32)

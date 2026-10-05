@@ -103,9 +103,10 @@ createMainWindow = createSurfaceWindow "homgb" 500 700
 -- the title and the Wayland app_id (SDL_PROP_WINDOW_CREATE_APP_ID) —
 -- the WM (xmonad-on-river) identifies homgb's surfaces by it; on X11
 -- WMProps tags the window the EWMH way instead. Caller positions,
--- tags, shows.
+-- tags, shows. (w/h are advisory only — SDL3 has no create-time
+-- position/size; the WM places and resizeSurfaceWindow sizes.)
 createSurfaceWindow :: String -> Int -> Int -> IO Window
-createSurfaceWindow name w h = do
+createSurfaceWindow name _w _h = do
   props <- createProperties
   setStr props "SDL.window.create.title" name
   setStr props "SDL.window.create.app_id" name

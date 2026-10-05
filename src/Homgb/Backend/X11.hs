@@ -28,7 +28,7 @@ import System.IO (hPutStrLn, stderr)
 
 import Homgb.Backend
 import Homgb.Backend.Wayland (waylandBackend)
-import Homgb.Bar (BarActions, BarState, barActiveWindow, refreshBar
+import Homgb.Bar (barActiveWindow, refreshBar
   , startBarEvents, x11BarActions)
 import Homgb.Config (Config(..))
 import qualified Homgb.Keyboard as Keyboard

@@ -14,7 +14,7 @@ module Homgb.Render
 
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM (atomically)
-import Control.Monad (when, unless, forM, forM_)
+import Control.Monad (when, unless, forM_)
 import Data.Bits ((.|.))
 import Data.Int (Int32)
 import Data.List ((\\))
@@ -39,10 +39,10 @@ import qualified DearImGui.Raw as Raw
   , setNextWindowSize, showMetricsWindow, separator
   , pushStyleVar)
 
-import Homgb.Backend (Backend, BarUpkeep(..), bkBarActions, bkBarUpkeep
+import Homgb.Backend (BarUpkeep(..), bkBarActions, bkBarUpkeep
   , bkHideSurface, bkMoveSurface, bkPollPointer, bkPressEdge
   , bkShowSurface, bkUpdateStrut)
-import Homgb.Bar (BarSection(..), barActiveWindow)
+import Homgb.Bar (BarSection(..))
 import Homgb.Config (Config(..))
 import Homgb.GL.Texture
 import Homgb.Monitors (Monitor(..), monitorAt, clampMonitor)
