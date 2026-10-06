@@ -85,6 +85,11 @@ data Theme = Theme
   , thBarSeparator :: ImVec4
   , thBarWsActive :: ImVec4
   , thBarButtonHovered :: ImVec4
+  -- volume OSD
+  , thVolBg :: ImVec4
+  , thVolText :: ImVec4
+  , thVolBar :: ImVec4
+  , thVolTrack :: ImVec4
   -- sizes (icon size / spacing fall back to the legacy config keys)
   , thTrayIconSize :: Int
   , thTraySpacing :: Int
@@ -153,6 +158,10 @@ mkTheme config = do
     -- grey" highlight is invisible against them
     , thBarWsActive = color "bar.ws-active" (ImVec4 0.55 0.62 0.78 1.0)
     , thBarButtonHovered = color "bar.button-hovered" (ImVec4 1.0 1.0 1.0 0.10)
+    , thVolBg = color "volume.bg" (ImVec4 0.13 0.14 0.15 0.97)
+    , thVolText = color "volume.text" (ImVec4 0.90 0.90 0.90 1.0)
+    , thVolBar = color "volume.bar" (ImVec4 0.55 0.62 0.78 1.0)
+    , thVolTrack = color "volume.track" (ImVec4 0.20 0.20 0.22 1.0)
     , thTrayIconSize = fromMaybe (configTrayIconSize config) (tcTrayIconSize tc)
     , thTraySpacing = fromMaybe (configTraySpacing config) (tcTraySpacing tc)
     , thTrayXEmbedScale = fromMaybe 1.0 (tcTrayXEmbedScale tc)

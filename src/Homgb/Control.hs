@@ -6,7 +6,7 @@
 -- > busctl --user call org.homgb /org/homgb/Control org.homgb.Control NextLayout
 --
 -- Works under any WM and on Wayland (unlike XGrabKey). The interface
--- grows with new commands (notification center toggle, etc).
+-- grows with new commands (notification center toggle, volume, etc).
 module Homgb.Control (startControl) where
 
 import Control.Concurrent.STM (atomically)
@@ -17,13 +17,16 @@ import DBus.Client
   , nameAllowReplacement, nameReplaceExisting)
 
 import Homgb.Keyboard (KbUi(..))
+import Homgb.Volume (VolumeEnv(..), volDelta, volToggleMute)
 
 -- | Own org.homgb and export /org/homgb/Control. Best-effort: a
 -- failed name request only disables remote control. centerVisible is
--- the notification center panel's show/hide switch. `wake` re-renders
--- after command-handling mutations (dbus dispatcher thread).
-startControl :: Maybe KbUi -> TVar Bool -> IO () -> IO ()
-startControl kbOpt centerVisible wake = do
+-- the notification center panel's show/hide switch. Volume
+-- up/down/mute drive the PipeWire default sink and pop the OSD (via
+-- the volume env's change callback). `wake` re-renders after
+-- command-handling mutations (dbus dispatcher thread).
+startControl :: Maybe KbUi -> TVar Bool -> Maybe VolumeEnv -> IO () -> IO ()
+startControl kbOpt centerVisible volOpt wake = do
   client <- connectSession
   _ <- requestName client "org.homgb"
          [nameAllowReplacement, nameReplaceExisting]
@@ -33,6 +36,9 @@ startControl kbOpt centerVisible wake = do
       [ autoMethod "NextLayout" (nextLayout wake kbOpt)
       , autoMethod "ToggleCenter"
           (atomically (modifyTVar' centerVisible not) >> wake)
+      , autoMethod "VolumeUp" (volChange wake volOpt 1)
+      , autoMethod "VolumeDown" (volChange wake volOpt (-1))
+      , autoMethod "ToggleMute" (toggleMute wake volOpt)
       ]
     }
   return ()
@@ -40,3 +46,14 @@ startControl kbOpt centerVisible wake = do
 nextLayout :: IO () -> Maybe KbUi -> IO ()
 nextLayout wake (Just kb) = kbUiRotate kb >> wake
 nextLayout _ Nothing = return ()
+
+-- | The PipeWire change callback re-renders (and pops the OSD), so an
+-- extra wake is only needed when there is nothing to control. Steps
+-- by the configured cubic-scale amount.
+volChange :: IO () -> Maybe VolumeEnv -> Int -> IO ()
+volChange _ (Just vol) dir = volDelta vol (fromIntegral dir * volStep vol)
+volChange wake Nothing _ = wake
+
+toggleMute :: IO () -> Maybe VolumeEnv -> IO ()
+toggleMute _ (Just vol) = volToggleMute vol
+toggleMute wake Nothing = wake

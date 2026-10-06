@@ -193,6 +193,19 @@ data Config = Config
   , configKbPerApp :: Bool
     -- ^ remember the layout per application (WM_CLASS) and restore it
     --   when one of the app's windows regains focus
+
+  -- volume (PipeWire-backed OSD + dbus control)
+  , configVolumeEnable :: Bool
+  , configVolumeTimeout :: Int
+    -- ^ ms the OSD stays visible after a volume change (default 2000)
+  , configVolumePosition :: String
+    -- ^ top-center | center | bottom-center
+  , configVolumeMargin :: Int
+    -- ^ px from the top/bottom screen edge (top-center/bottom-center)
+  , configVolumeMonitor :: Int
+  , configVolumeFollowMouse :: Bool
+  , configVolumeStep :: Int
+    -- ^ percent per VolumeUp/VolumeDown (cubic volume scale, like wpctl)
   }
 
 (.:.) :: FromJSON a => Y.Parser (Maybe Y.Object) -> Text.Text -> Y.Parser (Maybe a)
@@ -365,6 +378,20 @@ instance FromJSON Config where
     <*> secondLevel o "keyboard" "indicator" True
   -- configKbPerApp
     <*> secondLevel o "keyboard" "per-app" True
+  -- configVolumeEnable
+    <*> secondLevel o "volume" "enable" True
+  -- configVolumeTimeout
+    <*> secondLevel o "volume" "timeout" 2000
+  -- configVolumePosition
+    <*> secondLevel o "volume" "position" "bottom-center"
+  -- configVolumeMargin
+    <*> secondLevel o "volume" "margin" 50
+  -- configVolumeMonitor
+    <*> secondLevel o "volume" "monitor" 0
+  -- configVolumeFollowMouse
+    <*> secondLevel o "volume" "follow-mouse" False
+  -- configVolumeStep
+    <*> secondLevel o "volume" "step" 5
   parseJSON _ = fail "Expected Object for Config value"
 
 data ButtonConfig = Button
@@ -573,6 +600,10 @@ defaultConfigText = Text.pack $ unlines
   , "    popup.title-critical: \"#f26666\""
   , "    menu.bg: \"#333a52\""
   , "    menu.border: \"#8c9ec7\""
+  , "    volume.bg: \"#212227f8\""
+  , "    volume.text: \"#e6e6e6\""
+  , "    volume.bar: \"#8c9ec7\""
+  , "    volume.track: \"#333338\""
   , "  sizes:"
   , "    tray:"
   , "      padding-x: 8"
@@ -587,4 +618,12 @@ defaultConfigText = Text.pack $ unlines
   , "  layouts: []"
   , "  indicator: true"
   , "  per-app: true"
+  , "volume:"
+  , "  enable: true"
+  , "  timeout: 2000"
+  , "  position: bottom-center"
+  , "  margin: 50"
+  , "  monitor: 0"
+  , "  follow-mouse: false"
+  , "  step: 5"
   ]

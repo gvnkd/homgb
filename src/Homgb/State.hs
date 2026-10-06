@@ -19,6 +19,7 @@ import Homgb.Notifications.Daemon (NotifyState(..))
 import Homgb.Surface (Surfaces)
 import Homgb.Theme (Theme)
 import Homgb.Tray (TrayEnv)
+import Homgb.Volume (VolumeEnv)
 
 data AppState = AppState
   { appBackend :: Backend
@@ -36,6 +37,9 @@ data AppState = AppState
   , appBattery :: Maybe BatteryEnv
     -- ^ sysfs battery slice (bar.battery); Nothing when disabled or
     -- the node has no battery — no widget, no deadline then
+  , appVolume :: Maybe VolumeEnv
+    -- ^ PipeWire volume slice (volume.*): state TVar + OSD deadline;
+    -- Nothing when disabled or no PipeWire server
   , appSurfaces :: Surfaces
   , appScreenSize :: (Int, Int)
     -- ^ primary X screen size, fallback monitor geometry
@@ -70,10 +74,10 @@ data AppState = AppState
   }
 
 initialAppState :: Backend -> TVar NotifyState -> TrayEnv -> Maybe KbUi
-                -> Maybe BatteryEnv
+                -> Maybe BatteryEnv -> Maybe VolumeEnv
                 -> Surfaces -> (Int, Int) -> [Monitor] -> Theme -> TVar Bool
                 -> TVar Bool -> Word32 -> IO () -> IO AppState
-initialAppState backend tState tray kb bat surfaces screenSize monitors theme centerVisible barDirty userEv wake = do
+initialAppState backend tState tray kb bat vol surfaces screenSize monitors theme centerVisible barDirty userEv wake = do
   textures <- newTVarIO Map.empty
   heights <- newTVarIO Map.empty
   pointer <- newTVarIO (0, 0)
@@ -92,6 +96,7 @@ initialAppState backend tState tray kb bat surfaces screenSize monitors theme ce
     , appTray = tray
     , appKeyboard = kb
     , appBattery = bat
+    , appVolume = vol
     , appSurfaces = surfaces
     , appScreenSize = screenSize
     , appMonitors = monitors

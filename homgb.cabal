@@ -16,9 +16,11 @@ library
                       , Homgb.Config
                       , Homgb.Theme
                       , Homgb.Monitors
-                     , Homgb.Bar
-                     , Homgb.Battery
-                     , Homgb.HdrTune
+                      , Homgb.Bar
+                      , Homgb.Battery
+                      , Homgb.HdrTune
+                      , Homgb.PipeWire
+                      , Homgb.Volume
                      , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.WMProps
@@ -70,11 +72,12 @@ library
                      , lens
   c-sources:           cbits/homgb-xkb.c
                        cbits/homgb-tray-embed.c
+                       cbits/homgb-pipewire.c
   cxx-sources:         cbits/homgb-imgui-sdl3.cpp
                       , vendor/imgui/backends/imgui_impl_sdl3.cpp
   cxx-options:         -std=c++11 -DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"
   include-dirs:        vendor/imgui, vendor/imgui/backends
-  pkgconfig-depends:   xcb, xcb-xkb, x11, sdl3
+  pkgconfig-depends:   xcb, xcb-xkb, x11, sdl3, libpipewire-0.3
   default-language:    Haskell2010
   ghc-options:         -Wall -Wcompat -Wredundant-constraints
 

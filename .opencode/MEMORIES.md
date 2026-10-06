@@ -17,6 +17,61 @@
 
 # homgb
 
+## Volume OSD + PipeWire control (2026-10-06, uncommitted)
+
+- Native PipeWire client in cbits/homgb-pipewire.c + Homgb.PipeWire
+  (FFI) + Homgb.Volume (state/OSD logic) + drawVolumeOsd (Render.hs).
+  DBus: org.homgb.Control VolumeUp/VolumeDown/ToggleMute. Config:
+  volume.{enable,timeout(ms,default 2000),position(top-center|center|
+  bottom-center),margin,monitor,follow-mouse,step(%)}; theme colors
+  volume.{bg,text,bar,track}. Live-verified: dbus steps (cubic scale),
+  mute icon, auto-hide, external wpctl change pops OSD (needs
+  pw_node_subscribe_params — enum_params is ONE-SHOT, num=N ≠
+  subscribe), top-center/bottom-center placement, idle 0.2%.
+- WIREFLUTTER gdbus API IS A DEAD END on WP 0.5.14: the daemon owns
+  NO org.freedesktop.WirePlumber name and exports an EMPTY object tree
+  on its unique names (:1.18 etc — no ObjectManager, no Node objects).
+  wpctl works because it links libwireplumber and speaks the NATIVE
+  protocol — not gdbus.
+- WIREFLUTTER VOLUME SCALE IS CUBIC: the endpoint/channelVolumes on
+  the wire are LINEAR gains; wpctl displays the CUBE ROOT (0.55 shown
+  = 0.166 linear; wpctl set 0.8 → chV 0.512 = 0.8³). homgb keeps
+  volLevel on the cubic scale (matches wpctl/pavucontrol); conversion
+  in Homgb.Volume (linearToCubic/cubicToLinear).
+- NODE 'volume' PROP = ALSA HW MIXER, owned by WirePlumber policy —
+  NEVER write it (writing it desyncs audible volume from every mixer
+  UI). Clients write ONLY channelVolumes (+mute). Even then WP 0.5's
+  endpoint layer does NOT mirror client node writes into its own
+  volume cache, so wpctl's DISPLAY goes stale after homgb writes
+  (audible volume and homgb's OSD are always right; next wpctl action
+  re-syncs from its endpoint). pw-cli direct writes have the same
+  semantics — accepted PipeWire low-level-client behavior.
+- DEFAULT SINK DISCOVERY: WirePlumber 0.5 publishes the runtime
+  default in a metadata object named "default" (NOT "settings"!):
+  keys default.audio.sink (runtime) / default.configured.audio.sink,
+  values JSON {"name":"..."}. Metadata binding REPLAYS all properties
+  as events on pw_metadata_add_listener (that part was right).
+  homgb-pipewire.c subscribes to EVERY Metadata global and prefers
+  runtime > configured > first Audio/Sink.
+- UNSAFE FFI DEADLOCK (cost a debugging round): the pw FFI imports
+  were `unsafe`; c_pwSetCallback/c_pwSetVolume block on the pw loop
+  mutex while the pw thread calls the Haskell change callback, which
+  needs a GHC capability — capability pinned by the unsafe caller =
+  cross-thread deadlock (all threads parked in futex/scheduleWaitThread,
+  process alive, dbus dispatch dead). ALL homgb_pw_* imports are
+  `safe` now (same lesson as xcb eventLoop). Test deadlock shape with
+  gdb via sudo (ptrace_scope=1 blocks user gdb; sudo -n works).
+- OSD SURFACE: created LAST (topmost homgb float), WmNotification tag,
+  hide OUTSIDE the render gate (expiry wake arrives with
+  sawEvents=False — the menu-hide pattern), deadline via
+  volDeadline (freshness-gated like tipD, no 1ms spin), draw gated by
+  osdVisible (static content, no per-tick redraw). drawVolumeOsd
+  renders icon+bar with Raw draw-list primitives (speaker = rect +
+  triangle + 2 arcs or a mute X; no font glyph dependency).
+- pkill -f pwtest KILLED THE WRAPPING SHELL (pattern in own cmdline)
+  — pgrep -x | xargs -r kill instead (the MEMORIES [e]-trick lesson,
+  re-learned).
+
 ## HDR prototype (2026-10-05, wlroots + river patches)
 
 - Display: LG C1 65" on card1-HDMI-A-1 (only connected output; DPs dead).

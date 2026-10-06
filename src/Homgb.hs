@@ -10,7 +10,7 @@ import Control.Monad.Managed
 import Data.Word (Word32)
 import qualified Data.Text.IO as T
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, fromMaybe)
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime, utcTimeToPOSIXSeconds)
 import DearImGui hiding (w)
 import DearImGui.OpenGL3
@@ -42,6 +42,7 @@ import Homgb.State
 import Homgb.Surface
 import Homgb.Theme (applyFont, mkTheme)
 import Homgb.Tray (TrayEnv(..), TooltipInfo(..), startTray)
+import Homgb.Volume (startVolume, volDeadline, volOsdVisible)
 import Homgb.WMProps (WmClass(..))
 
 run :: IO ()
@@ -67,21 +68,25 @@ run = do
   hPutStrLn stderr $ "homgb: backend: " ++ bkName backend
   kb <- bkStartKeyboard backend config wake
   bat <- startBattery config
+  vol <- startVolume config wake
   screen <- bkScreenSize backend
   monitors <- bkMonitors backend
   centerVisible <- newTVarIO False
-  startControl kb centerVisible wake
+  startControl kb centerVisible vol wake
   surfs0 <- mapM (\(name, V2 w h, raise) -> createSurface name (V2 w h) raise)
     -- menu and tooltip are created LAST: xmonad stacks floats by
     -- window-id order, so they get the topmost slots among homgb
     -- floats ("menu/tooltip always on top", even over the center
-    -- panel). The tray maps lowered when tray.behind-windows is set
-    -- (it stays behind all windows, unclickable where overlapped).
+    -- panel). The volume OSD is created last: a transient that must
+    -- stack above everything else while visible. The tray maps lowered
+    -- when tray.behind-windows is set (it stays behind all windows,
+    -- unclickable where overlapped).
     [ ("homgb-tray", V2 500 80, not (configTrayBehindWindows config))
     , ("homgb-popups", V2 340 200, True)
     , ("homgb-center", V2 (configWidth config) 800, True)
     , ("homgb-menu", V2 360 560, True)
     , ("homgb-tooltip", V2 360 120, True)
+    , ("homgb-volume", V2 340 76, True)
     ]
   -- each surface context gets its own font atlas: add the theme font
   -- to every context before the renderer builds the atlas, and keep
@@ -90,9 +95,10 @@ run = do
     Raw.setCurrentContext (sContext s)
     f <- applyFont theme
     return s { sMainFont = f }
-  (traySurf, popSurf, centerSurf, menuSurf, tooltipSurf) <- case surfs of
-    [t, p, c, m, tt] -> return (t, p, c, m, tt)
-    _ -> error "homgb: internal: expected 5 surfaces"
+  (traySurf, popSurf, centerSurf, menuSurf, tooltipSurf, volSurf) <-
+    case surfs of
+      [t, p, c, m, tt, v] -> return (t, p, c, m, tt, v)
+      _ -> error "homgb: internal: expected 6 surfaces"
   -- EWMH tags must be set BEFORE the windows map
   mapM_ (\(s, c) -> bkTagSurface backend s c)
     [ (traySurf, WmDock)
@@ -100,21 +106,24 @@ run = do
     , (centerSurf, WmDock)
     , (menuSurf, WmPopupMenu)
     , (tooltipSurf, WmTooltip)
+    , (volSurf, WmNotification)
     ]
-  mapM_ initSurfaceBackend [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf]
+  mapM_ initSurfaceBackend
+    [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf, volSurf]
   -- become the XEmbed tray host (trayer must not be running):
   -- the ICCCM MANAGER broadcast wakes already-running XEmbed apps
   -- (Telegram-desktop) so they dock without a restart.
   bkStartEmbedHost backend config tray traySurf
   -- making a GL context current maps a hidden SDL window; the
-  -- popup/menu/center/tooltip surfaces start hidden (skip-draw while
-  -- idle)
+  -- popup/menu/center/tooltip/volume surfaces start hidden (skip-draw
+  -- while idle)
   SDL3.hideWindow (sWindow popSurf)
   SDL3.hideWindow (sWindow menuSurf)
   SDL3.hideWindow (sWindow centerSurf)
   SDL3.hideWindow (sWindow tooltipSurf)
-  app <- initialAppState backend tState tray kb bat
-    (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf) screen
+  SDL3.hideWindow (sWindow volSurf)
+  app <- initialAppState backend tState tray kb bat vol
+    (Surfaces traySurf popSurf menuSurf centerSurf tooltipSurf volSurf) screen
     monitors theme centerVisible barDirty userEv wake
   bkStartBarEvents backend (appBarDirty app) wake
   runManaged $ do
@@ -122,14 +131,15 @@ run = do
     -- (io.BackendRendererUserData): init/shutdown it once per surface
     managed_ $ bracket_
       (mapM_ (withSurfaceContext (void openGL3Init))
-        [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf])
+        [traySurf, popSurf, centerSurf, menuSurf, tooltipSurf, volSurf])
       (mapM_ (withSurfaceContext openGL3Shutdown)
-        [tooltipSurf, menuSurf, centerSurf, popSurf, traySurf])
+        [volSurf, tooltipSurf, menuSurf, centerSurf, popSurf, traySurf])
     liftIO $ do
       SDL3.hideWindow (sWindow popSurf)
       SDL3.hideWindow (sWindow menuSurf)
       SDL3.hideWindow (sWindow centerSurf)
       SDL3.hideWindow (sWindow tooltipSurf)
+      SDL3.hideWindow (sWindow volSurf)
       bkShowSurface backend traySurf
       mainLoop app
   SDL3.quitVideo
@@ -199,7 +209,13 @@ mainLoop app = do
     -- per-frame wake, which made the loop frame-locked at GL speed
     -- (~13-15% CPU while open)
     menuOpen <- anyMenuOpen app
-    when (changed || menuOpen) $ do
+    -- volume OSD: visible for volume.timeout seconds after any volume
+    -- state change; it needs no per-tick redraw (static content), but
+    -- it keeps the render gate open so the hide transition runs
+    osdVisible <- case appVolume app of
+      Just ve -> volOsdVisible ve
+      Nothing -> return False
+    when (changed || menuOpen || osdVisible) $ do
       -- The menu poll ticks (~20Hz, menuOpen via the menu deadline)
       -- redraw ONLY the menu surface: a full re-render per tick costs
       -- ~10% CPU. Everything else renders on real changes only.
@@ -232,6 +248,11 @@ mainLoop app = do
           else bkHideSurface (appBackend app) (surfacesCenter (appSurfaces app))
         when popUnmeasured $
           drawOn (surfacesPopups (appSurfaces app)) (drawPopupSurface app)
+        -- volume OSD (drawn only on changes; the surface stays mapped
+        -- with its last frame between ticks)
+        if osdVisible
+          then drawOn (surfacesVolume (appSurfaces app)) (drawVolumeOsd app)
+          else bkHideSurface (appBackend app) (surfacesVolume (appSurfaces app))
       -- the menu surface is drawn only while a menu is open: swapping
       -- a hidden SDL window maps it (stale black frame over other
       -- surfaces). menuOpen also drives the menu poll ticks above.
@@ -251,6 +272,12 @@ mainLoop app = do
     -- this is free on ticks.
     when menuOpen $
       bkHideSurface (appBackend app) (surfacesTooltip (appSurfaces app))
+    -- OSD hide runs OUTSIDE the render gate, like the menu hide: on
+    -- the expiry iteration neither `changed` nor osdVisible is true
+    -- (the timeout wake arrives with sawEvents=False), so a gated hide
+    -- would leave the surface mapped forever. Idempotent (sShown).
+    unless osdVisible $
+      bkHideSurface (appBackend app) (surfacesVolume (appSurfaces app))
     mainLoop app
 
 -- | Earliest time the loop must wake even with no events: the bar
@@ -302,15 +329,22 @@ nextDeadline app = do
     menus <- readTVarIO (trayMenus (appTray app))
     return (if any (\(_, _, st) -> msVisible st) (Map.elems menus)
               then now + 0.1 else far)
+  -- volume OSD expiry: wake exactly when the visibility window ends.
+  -- volDeadline freshness-gates on volOsdVisible, so a stale window
+  -- can never become a past-deadline 1ms spin
+  volD <- case appVolume app of
+    Just ve -> fromMaybe far <$> volDeadline ve
+    Nothing -> return far
   let config = notiConfig state
       followAny = configNotiFollowMouse config
         || configNotiCenterFollowMouse config
         || configTrayFollowMouse config
+        || configVolumeFollowMouse config
       cap = now + (if followAny then 0.1 else 0.25)
       clock = fromInteger ((floor (now / 60) + 1) * 60) :: POSIXTime
       expiries = [ expiryAt config n | n <- notiStList state ]
   return (foldl' min cap (clock : lastBar + 5 : kbD : batD : tipD : embedD
-    : menuD : expiries))
+    : menuD : volD : expiries))
   where
     far = 1e12 :: POSIXTime
 
@@ -349,5 +383,6 @@ eventRoutes app =
          , surfacesMenus (appSurfaces app)
          , surfacesCenter (appSurfaces app)
          , surfacesTooltip (appSurfaces app)
+         , surfacesVolume (appSurfaces app)
          ]
   ]

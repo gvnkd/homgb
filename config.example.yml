@@ -274,6 +274,12 @@ theme:
     # Tray menus and hover tooltips share this palette.
     menu.bg: "#333a52"
     menu.border: "#8c9ec7"
+    # Volume OSD: window background, percent/icon text, progress-bar
+    # fill and the bar's track.
+    volume.bg: "#212227f8"
+    volume.text: "#e6e6e6"
+    volume.bar: "#8c9ec7"
+    volume.track: "#333338"
     # active workspace / focused-window highlight (inactive items stay
     # in the default text color)
     bar.ws-active: "#8c9ec7"
@@ -313,3 +319,37 @@ keyboard:
   # switched in keep the current layout; the first manual switch in an
   # app creates its entry.
   per-app: true
+
+# -------------------------------------------------------------------
+# Volume control (PipeWire) + on-screen display
+# -------------------------------------------------------------------
+# Volume changes arrive over D-Bus (bind keys in your WM to these):
+#   busctl --user call org.homgb /org/homgb/Control org.homgb.Control VolumeUp
+#   busctl --user call org.homgb /org/homgb/Control org.homgb.Control VolumeDown
+#   busctl --user call org.homgb /org/homgb/Control org.homgb.Control ToggleMute
+# The indicator pops up on EVERY volume/mute change (including ones
+# made by other mixers) and auto-hides after `timeout` ms.
+volume:
+
+  # Master switch. Off = no PipeWire connection, no D-Bus methods, no
+  # OSD (the commands still ACK on D-Bus but do nothing).
+  enable: true
+
+  # How long the indicator stays visible after a change, ms.
+  timeout: 2000
+
+  # Placement on the chosen monitor: top-center | center |
+  # bottom-center. `margin` is the px distance from the top/bottom
+  # screen edge (ignored for center).
+  position: bottom-center
+  margin: 50
+
+  # Monitor selection (same semantics as the popup keys): index into
+  # the Xinerama/SDL monitor list, or follow the mouse pointer.
+  monitor: 0
+  follow-mouse: false
+
+  # Volume step per VolumeUp/VolumeDown, percent. The step is applied
+  # on WirePlumber's cubic volume scale (like wpctl), so 5% is a
+  # perceptually even step.
+  step: 5

@@ -8,6 +8,7 @@ module Homgb.Render
   , drawMenusSurface
   , drawCenterSurface
   , drawTooltipSurface
+  , drawVolumeOsd
   , anyMenuOpen
   , anyTooltipOpen
   ) where
@@ -15,7 +16,7 @@ module Homgb.Render
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM (atomically)
 import Control.Monad (when, unless, forM_)
-import Data.Bits ((.|.))
+import Data.Bits ((.|.), shiftL, zeroBits)
 import Data.Int (Int32)
 import Data.List ((\\))
 import Data.Maybe (fromMaybe)
@@ -27,6 +28,7 @@ import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Linear (V2(..))
 import Foreign.Marshal.Alloc (alloca)
+import Foreign.C.Types (CFloat(..))
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (poke)
 
@@ -37,7 +39,8 @@ import DearImGui hiding (image, begin, x, y, w)
 import qualified DearImGui.Raw as Raw
   (sameLine, spacing, begin, pushStyleColor, setNextWindowPos
   , setNextWindowSize, showMetricsWindow, separator
-  , pushStyleVar)
+  , pushStyleVar, setCursorPos, getWindowDrawList)
+import qualified DearImGui.Raw.DrawList as DrawList
 
 import Homgb.Backend (BarUpkeep(..), bkBarActions, bkBarUpkeep
   , bkHideSurface, bkMoveSurface, bkPollPointer, bkPressEdge
@@ -55,6 +58,7 @@ import Homgb.State
 import Homgb.Surface
   (Surface(..), Surfaces(..), resizeSurfaceWindow, surfaceWindowSize)
 import Homgb.Theme (Theme(..), themePopupBg, themePopupBorder, themePopupTitle)
+import Homgb.Volume (VolumeEnv(..), VolumeState(..))
 import Homgb.Tray (TrayEnv(..), TooltipInfo(..))
 import Homgb.Keyboard (kbUiPoll)
 import Homgb.Tray.Menu.Render (MenuFrame(..), MenuState(..), renderMenus)
@@ -74,6 +78,9 @@ data Upkeep = Upkeep
     -- ^ the battery sysfs poll (bar.battery-interval) saw new values
   , upPointerMoved :: Bool
     -- ^ the follow-mouse pointer poll moved
+  , upVolChanged :: Bool
+    -- ^ the PipeWire volume state TVar was written since the last
+    --   frame (volume commands AND external mixer changes)
   }
 
 -- | Per-iteration state maintenance, all deadline/event-driven:
@@ -129,6 +136,12 @@ frameUpkeep app = do
   batChanged <- case appBattery app of
     Just be -> pollBattery be
     Nothing -> return False
+  -- volume: the PipeWire thread writes the state TVar + volDirty on
+  -- every change; swap the flag out (no polling — the pw callback
+  -- wakes the loop)
+  volChanged <- case appVolume app of
+    Just ve -> atomically $ swapTVar (volDirty ve) False
+    Nothing -> return False
   -- The bar state and the z-order re-assert are EVENT-DRIVEN:
   -- the backend's event listener (X11: root property/structure
   -- selection) sets appBarDirty, and wakes the loop. We re-read only
@@ -157,6 +170,7 @@ frameUpkeep app = do
     , upBarChanged = barChanged
     , upBatChanged = batChanged
     , upPointerMoved = pointerMoved
+    , upVolChanged = volChanged
     }
 
 -- | Pick the monitor a surface lives on: the configured index, or the
@@ -431,6 +445,128 @@ anyTooltipOpen app = do
   where
     tooltipLive' tip now =
       now - tiLastSeen tip < 0.15 && now - tiSince tip > 0.35
+
+-- | Volume OSD (EWMH NOTIFICATION-tagged surface): speaker icon +
+-- percent + progress bar, shown on every volume/mute change and
+-- auto-hidden by the main loop after volume.timeout. Placement is
+-- config-driven: top-center / center / bottom-center with a margin
+-- from the top/bottom screen edge.
+drawVolumeOsd :: AppState -> IO ()
+drawVolumeOsd app = do
+  let surf = surfacesVolume (appSurfaces app)
+  case appVolume app of
+    Nothing -> bkHideSurface (appBackend app) surf
+    Just env -> do
+      st <- readTVarIO (volState env)
+      if not (volAvailable st)
+        then bkHideSurface (appBackend app) surf
+        else do
+          let theme = appTheme app
+              w = 340 :: Int
+              h = 76 :: Int
+              cy = fromIntegral h / 2 :: Float
+              s = 22 :: Float
+              ix = 22 :: Float
+          bkShowSurface (appBackend app) surf
+          resizeSurfaceWindow surf w h
+          state <- readTVarIO (appNotify app)
+          let config = notiConfig state
+          mon <- monitorFor app config configVolumeMonitor
+                   configVolumeFollowMouse
+          let x = monX mon + (monW mon - w) `div` 2
+              y = case volPosition env of
+                "top-center" -> monY mon + volMargin env
+                "center" -> monY mon + (monH mon - h) `div` 2
+                _ -> monY mon + monH mon - volMargin env - h
+          bkMoveSurface (appBackend app) surf x y
+          let pct = round (volLevel st * 100) :: Int
+              pctTxt = T.pack (show pct <> "%")
+          ImVec2 pctW pctH <- calcTextSize pctTxt True 0
+          withImVec4 (thVolBg theme) $ \bgPtr ->
+            withImVec2 (ImVec2 0 0) $ \posPtr ->
+            withImVec2 (ImVec2 (fromIntegral w) (fromIntegral h))
+              $ \sizePtr -> do
+              Raw.pushStyleColor ImGuiCol_WindowBg bgPtr
+              Raw.setNextWindowPos posPtr ImGuiCond_Always Nothing
+              Raw.setNextWindowSize sizePtr ImGuiCond_Always
+              beginVisible <- BS.useAsCString "homgb-volume"
+                $ \label -> Raw.begin label Nothing (Just osdFlags)
+              when beginVisible $ do
+                dl <- Raw.getWindowDrawList
+                let txtC = if volMuted st
+                      then dimColor (thVolText theme)
+                      else u32Color (thVolText theme)
+                    barC = u32Color (thVolBar theme)
+                    trackC = u32Color (thVolTrack theme)
+                    -- percent text anchored to the right edge,
+                    -- vertically centered
+                    tx = fromIntegral w - 20 - pctW
+                    ty = cy - pctH / 2
+                withImVec2 (ImVec2 tx ty) $ \curPtr ->
+                  Raw.setCursorPos curPtr
+                text pctTxt
+                -- progress bar between the icon and the percent
+                let bx0 = ix + s * 1.55
+                    bx1 = tx - 14
+                    bw = max 20 (bx1 - bx0)
+                    frac = max 0 (min 1 (volLevel st))
+                withImVec2 (ImVec2 bx0 (cy - 4)) $ \p0 ->
+                  withImVec2 (ImVec2 bx1 (cy + 4)) $ \p1 ->
+                    DrawList.addRectFilled dl p0 p1 trackC 4 zeroBits
+                withImVec2 (ImVec2 bx0 (cy - 4)) $ \p0 ->
+                  withImVec2 (ImVec2 (bx0 + bw * frac) (cy + 4)) $ \p1 ->
+                    DrawList.addRectFilled dl p0 p1 barC 4 zeroBits
+                drawSpeakerIcon dl ix cy s txtC (volMuted st)
+              end
+              popStyleColor 1
+  where
+    osdFlags = foldl1 combineFlags
+      [ ImGuiWindowFlags_NoTitleBar
+      , ImGuiWindowFlags_NoResize
+      , ImGuiWindowFlags_NoMove
+      , ImGuiWindowFlags_NoScrollbar
+      , ImGuiWindowFlags_NoCollapse
+      ]
+    -- speaker: base rectangle + cone triangle; two arcs when audible,
+    -- a cross when muted (all draw-list primitives, no font glyphs)
+    drawSpeakerIcon dl ix0 cy0 s col muted = do
+      let baseW = s * 0.22
+          baseH = s * 0.60
+          coneX = ix0 + baseW
+          coneH = s * 0.84
+          coneTip = ix0 + s * 0.72
+      withImVec2 (ImVec2 ix0 (cy0 - baseH / 2)) $ \p0 ->
+        withImVec2 (ImVec2 (ix0 + baseW) (cy0 + baseH / 2)) $ \p1 ->
+          DrawList.addRectFilled dl p0 p1 col 1 zeroBits
+      withImVec2 (ImVec2 coneX (cy0 - coneH / 2)) $ \p1 ->
+        withImVec2 (ImVec2 coneX (cy0 + coneH / 2)) $ \p2 ->
+          withImVec2 (ImVec2 coneTip cy0) $ \p3 ->
+            DrawList.addTriangleFilled dl p1 p2 p3 col
+      if muted
+        then do
+          let x0 = coneTip + s * 0.14
+              x1 = coneTip + s * 0.52
+              xh = s * 0.36
+          withImVec2 (ImVec2 x0 (cy0 - xh)) $ \p0 ->
+            withImVec2 (ImVec2 x1 (cy0 + xh)) $ \p1 ->
+              DrawList.addLine dl p0 p1 col 2.5
+          withImVec2 (ImVec2 x0 (cy0 + xh)) $ \p0 ->
+            withImVec2 (ImVec2 x1 (cy0 - xh)) $ \p1 ->
+              DrawList.addLine dl p0 p1 col 2.5
+        else do
+          let aMin = realToFrac (-55 * pi / 180 :: Double) :: CFloat
+              aMax = realToFrac (55 * pi / 180 :: Double) :: CFloat
+          withImVec2 (ImVec2 (coneTip + s * 0.08) cy0) $ \c0 -> do
+            DrawList.pathArcTo dl c0 (realToFrac (s * 0.32)) aMin aMax 16
+            DrawList.pathStroke dl col 2 zeroBits
+            DrawList.pathArcTo dl c0 (realToFrac (s * 0.55)) aMin aMax 16
+            DrawList.pathStroke dl col 2 zeroBits
+    u32Color (ImVec4 r g b a) =
+      (chan a `shiftL` 24) .|. (chan b `shiftL` 16)
+        .|. (chan g `shiftL` 8) .|. chan r
+      where
+        chan v = fromIntegral (round (max 0 (min 1 v) * 255) :: Int)
+    dimColor (ImVec4 r g b _) = u32Color (ImVec4 r g b 0.45)
 -- | Notification center panel (EWMH DOCK): full-height window at the
 -- right screen edge. Lists the daemon's persistent history (expired
 -- popups included) with per-item dismiss and a clear-all button.
