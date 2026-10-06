@@ -17,16 +17,18 @@ import DBus.Client
   , nameAllowReplacement, nameReplaceExisting)
 
 import Homgb.Keyboard (KbUi(..))
+import Homgb.Media (MediaEnv, mediaCommand)
 import Homgb.Volume (VolumeEnv(..), volDelta, volToggleMute)
 
 -- | Own org.homgb and export /org/homgb/Control. Best-effort: a
 -- failed name request only disables remote control. centerVisible is
 -- the notification center panel's show/hide switch. Volume
 -- up/down/mute drive the PipeWire default sink and pop the OSD (via
--- the volume env's change callback). `wake` re-renders after
+-- the volume env's change callback). Media* route MPRIS commands to
+-- the right player (Homgb.Media). `wake` re-renders after
 -- command-handling mutations (dbus dispatcher thread).
-startControl :: Maybe KbUi -> TVar Bool -> Maybe VolumeEnv -> IO () -> IO ()
-startControl kbOpt centerVisible volOpt wake = do
+startControl :: Maybe KbUi -> TVar Bool -> Maybe VolumeEnv -> MediaEnv -> IO () -> IO ()
+startControl kbOpt centerVisible volOpt media wake = do
   client <- connectSession
   _ <- requestName client "org.homgb"
          [nameAllowReplacement, nameReplaceExisting]
@@ -39,6 +41,9 @@ startControl kbOpt centerVisible volOpt wake = do
       , autoMethod "VolumeUp" (volChange wake volOpt 1)
       , autoMethod "VolumeDown" (volChange wake volOpt (-1))
       , autoMethod "ToggleMute" (toggleMute wake volOpt)
+      , autoMethod "MediaPlayPause" (mediaCommand media "PlayPause")
+      , autoMethod "MediaNext" (mediaCommand media "Next")
+      , autoMethod "MediaPrev" (mediaCommand media "Previous")
       ]
     }
   return ()

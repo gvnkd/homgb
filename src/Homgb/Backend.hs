@@ -16,6 +16,7 @@ module Homgb.Backend
   ) where
 
 import Control.Concurrent.STM.TVar (TVar)
+import qualified Data.Text as T
 
 import Homgb.Bar (BarActions, BarState)
 import Homgb.Config (Config)
@@ -79,4 +80,9 @@ data Backend = Backend
     -- covers homgb's own surfaces
   -- keyboard
   , bkStartKeyboard :: Config -> IO () -> IO (Maybe KbUi)
+  -- media keys (MPRIS routing, Homgb.Media)
+  , bkFocusedAppId :: IO T.Text
+    -- ^ app_id/class of the focused window ("" when the platform does
+    -- not plumb it); the Media* commands prefer the player whose bus
+    -- name matches the focused app
   }

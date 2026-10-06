@@ -69,6 +69,9 @@ x11Backend dpy = Backend
   , bkPressEdge = samplePressEdge (Just dpy)
   , bkStartKeyboard = \cfg wake ->
       fmap (kbToUi dpy) <$> Keyboard.startKeyboard cfg wake
+  , bkFocusedAppId = return ""
+    -- the WM_CLASS of the active window is not plumbed here; media
+    -- keys fall back to the last-Playing/sole-player rules
   }
 
 -- | Which backend WOULD be selected — the pure env part, splittable

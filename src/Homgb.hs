@@ -27,12 +27,13 @@ import Homgb.Config (Config(..), getConfig, defaultConfigText)
 import Homgb.Control (startControl)
 import Homgb.Bar (barCovered)
 import Homgb.Battery (BatteryEnv(..), BatteryState(..), startBattery)
-import Homgb.Backend (bkHideSurface, bkMonitors, bkName, bkScreenSize
-  , bkShowSurface, bkStartBarEvents, bkStartEmbedHost, bkStartKeyboard
-  , bkTagSurface)
+import Homgb.Backend (bkFocusedAppId, bkHideSurface, bkMonitors, bkName
+  , bkScreenSize, bkShowSurface, bkStartBarEvents, bkStartEmbedHost
+  , bkStartKeyboard, bkTagSurface)
 import Homgb.Backend.X11 (preferredBackend, selectBackend)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (KbUi(..), LayoutState(..))
+import Homgb.Media (startMedia)
 import Homgb.Notifications.Daemon (NotifyState(..), startNotificationDaemon)
 import Homgb.Notifications.Data (Notification(..))
 import Homgb.Render
@@ -72,7 +73,8 @@ run = do
   screen <- bkScreenSize backend
   monitors <- bkMonitors backend
   centerVisible <- newTVarIO False
-  startControl kb centerVisible vol wake
+  media <- startMedia (bkFocusedAppId backend)
+  startControl kb centerVisible vol media wake
   surfs0 <- mapM (\(name, V2 w h, raise) -> createSurface name (V2 w h) raise)
     -- menu and tooltip are created LAST: xmonad stacks floats by
     -- window-id order, so they get the topmost slots among homgb

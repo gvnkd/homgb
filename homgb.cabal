@@ -21,6 +21,7 @@ library
                       , Homgb.HdrTune
                       , Homgb.PipeWire
                       , Homgb.Volume
+                      , Homgb.Media
                      , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.WMProps

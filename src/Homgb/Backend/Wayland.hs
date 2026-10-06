@@ -80,6 +80,7 @@ waylandBackend wc = Backend
   , bkPollPointer = sdlPointer
   , bkPressEdge = pressEdgeSDL
   , bkStartKeyboard = \_ _ -> return (Just (wmKbUi wc))
+  , bkFocusedAppId = snd <$> readTVarIO (wcFocus wc)
   }
 
 -- | Button-edge detection from SDL state: button events reach SDL
