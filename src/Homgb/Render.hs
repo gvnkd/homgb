@@ -190,6 +190,7 @@ drawTraySurface app = do
     (if configBarWorkspaces config || configBarWindows config
        then Just (BarSection (appBar app) (bkBarActions (appBackend app)))
        else Nothing)
+    (appHdrTune app)
     (ImVec2 (fromIntegral surfW) (fromIntegral surfH))
     winPos (monW mon, monH mon)
   if configBarLayout config

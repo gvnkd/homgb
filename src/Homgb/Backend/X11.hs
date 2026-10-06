@@ -22,8 +22,10 @@ import Data.Maybe (fromMaybe)
 import Graphics.X11.Xlib.Display (defaultRootWindow)
 import Graphics.X11.Xlib.Misc (queryPointer)
 import Graphics.X11.Xlib.Types (Display(..))
+import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (die)
+import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 
 import Homgb.Backend
@@ -80,7 +82,20 @@ preferredBackend = do
     Just b -> return (Just b)
     Nothing -> do
       session <- lookupEnv "XDG_SESSION_TYPE"
-      return (if session == Just "wayland" then Just "wayland" else Nothing)
+      case session of
+        Just s -> return (if s == "wayland" then Just "wayland" else Nothing)
+        -- stale-shell fallback: a shell that predates the session
+        -- export has no XDG_SESSION_TYPE; trust WAYLAND_DISPLAY only
+        -- when its socket actually exists in XDG_RUNTIME_DIR (a bare
+        -- X11 session never sets WAYLAND_DISPLAY)
+        Nothing -> do
+          mSock <- lookupEnv "WAYLAND_DISPLAY"
+          case mSock of
+            Just sock | not (null sock) -> do
+              runtime <- fromMaybe "/run/user/1000" <$> lookupEnv "XDG_RUNTIME_DIR"
+              exists <- doesFileExist (runtime </> sock)
+              return (if exists then Just "wayland" else Nothing)
+            _ -> return Nothing
 
 -- | Backend selection. HOMGB_BACKEND=x11|wayland forces; otherwise a
 -- Wayland session (XDG_SESSION_TYPE) picks the Wayland backend and

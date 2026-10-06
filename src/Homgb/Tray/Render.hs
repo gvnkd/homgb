@@ -44,6 +44,7 @@ import Homgb.Bar
 import Homgb.Battery
   ( BatteryEnv(..), BatteryState(..), batteryLabel, batteryTooltip )
 import Homgb.Config (Config(..))
+import Homgb.HdrTune (HdrTune, hdrTuneWidth, renderHdrTune)
 import Homgb.GL.Texture
 import Homgb.Keyboard (KbUi(..), currentLayout)
 import Homgb.Theme (Theme(..))
@@ -139,10 +140,11 @@ offerTooltip env key tipLines (wx, wy) = do
 -- layout mode the surface spans the full monitor width instead.
 renderTray :: TrayEnv -> TrayTextures -> Config -> Theme
            -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
+           -> Maybe HdrTune
            -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTray env textures config theme kbEnv mBat mainFont mBar surfSize winPos screenSize
+renderTray env textures config theme kbEnv mBat mainFont mBar mHdr surfSize winPos screenSize
   | configBarLayout config =
-      renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
+      renderTrayBar env textures config theme kbEnv mBat mainFont mBar mHdr surfSize
         winPos screenSize
   | otherwise =
       renderTrayLegacy env textures config theme kbEnv mBat mainFont mBar surfSize
@@ -276,8 +278,9 @@ renderTrayLegacy env textures config theme kbEnv mBat mainFont mBar surfSize
 -- caller sizes the surface to the full monitor width.
 renderTrayBar :: TrayEnv -> TrayTextures -> Config -> Theme
               -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
+              -> Maybe HdrTune
               -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO (Float, Float)
-renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
+renderTrayBar env textures config theme kbEnv mBat mainFont mBar mHdr surfSize
               winPos screenSize@(monW, _) = do
   state <- readTVarIO (trayState env)
   embeds <- if configTrayXEmbed config
@@ -308,8 +311,10 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
   dbg <- lookupEnv "HOMGB_DEBUG"
   case dbg of
     Just _ -> hPutStrLn stderr $ "bar sections: left="
-      ++ show (map snd (slLeft sects)) ++ " right="
-      ++ show (map snd (slRight sects)) ++ " rightX=" ++ show (slRightX sects)
+      ++ show [ w | sec <- [slWs sects, slTitle sects, slWin sects
+                          , slHdr sects], fst sec, let w = snd sec ]
+      ++ " right=" ++ show (map snd (slRight sects))
+      ++ " rightX=" ++ show (slRightX sects)
     Nothing -> return ()
   let ImVec2 _surfW surfH = surfSize
   _ <- withImVec4 (thBarBg theme) $ \bgPtr ->
@@ -331,7 +336,7 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
         beginVisible <- BS.useAsCString "homgb-tray"
           $ \label -> Raw.begin label Nothing (Just trayFlags)
         when beginVisible $
-          renderRow env textures config theme kbEnv mBat mainFont mBar items
+          renderRow env textures config theme kbEnv mBat mainFont mBar mHdr items
             embeds iconSize btn traySpacing sects surfSize winPos screenSize
         end
         Raw.popStyleVar 2
@@ -371,6 +376,9 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
       winW <- case mBar of
         Just (BarSection barT _) -> measureWinButtons barT config
         Nothing -> return 0
+      hdrW <- case mHdr of
+        Just _ | configBarHdrTune config -> hdrTuneWidth traySpacing
+        _ -> return 0
       kbW <- measureIndicator
       batW <- measureBattery mBat
       titleNatural <- case mBar of
@@ -397,14 +405,16 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
       let hasWs = wsW > 0
           hasTitle = titleNatural > 0
           hasWin = winW > 0
+          hasHdr = hdrW > 0
           rightFlags = [iconsW > 0, batW > 0, kbW > 0, clockW > 0, dateW > 0]
           rightN = length (filter id rightFlags)
           rightGaps = fromIntegral (max 0 (rightN - 1))
           -- separators between the left sections themselves
           crossSeps = (if hasWs && hasTitle then 1 else 0)
-            + (if (hasWs || hasTitle) && hasWin then 1 else 0) :: Int
+            + (if (hasWs || hasTitle) && hasWin then 1 else 0)
+            + (if (hasWs || hasTitle || hasWin) && hasHdr then 1 else 0) :: Int
           crossSepW = fromIntegral crossSeps * sw
-          fixedLeft = wsW + winW + crossSepW
+          fixedLeft = wsW + winW + hdrW + crossSepW
           rightTotal = iconsW + batW + kbW + clockW + dateW + rightGaps * gap
           -- the right group's left edge, anchored to the right pad;
           -- the ONLY placement authority — renderRow draws the group
@@ -412,12 +422,11 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
           rightX = fromIntegral monW - thTrayPadX theme - rightTotal
           titleAvail = rightX - thTrayPadX theme - fixedLeft
           titleW = min titleNatural (max 0 titleAvail)
-          left = filter fst [ (wsW > 0, wsW), (hasTitle, titleW)
-                            , (winW > 0, winW) ]
           right = filter fst [ (iconsW > 0, iconsW), (batW > 0, batW)
                              , (kbW > 0, kbW)
                              , (dateW > 0, dateW), (clockW > 0, clockW) ]
-      return (SectionLayout left right titleW rightX)
+      return (SectionLayout (wsW > 0, wsW) (hasTitle, titleW) (winW > 0, winW)
+              (hasHdr, hdrW) right rightX)
     measureIndicator = case kbEnv of
       Just kb | configKbIndicator config -> do
         s <- readTVarIO (kbUiState kb)
@@ -431,14 +440,18 @@ renderTrayBar env textures config theme kbEnv mBat mainFont mBar surfSize
 -- single placement authority for the right group (icons, indicator,
 -- date, clock): renderRow draws the group at exactly that x and the
 -- XEmbed slot math reads it too — the ImGui widgets and the foreign
--- X windows therefore cannot drift apart.
+-- X windows therefore cannot drift apart. Left sections are NAMED
+-- slots (never a filtered list): the on/off flag and the width travel
+-- together — an index into a filtered list breaks as soon as one
+-- section is absent (windows disappeared whenever the title was).
 data SectionLayout = SectionLayout
-  { slLeft :: [(Bool, Float)]
-    -- ^ on/off flags + widths of the left sections (ws, title,
-    --   windows) — title width is the clamped budget, not the
+  { slWs :: (Bool, Float)
+  , slTitle :: (Bool, Float)
+    -- ^ flag: a title exists; width: the clamped budget, not the
     --   rendered advance
+  , slWin :: (Bool, Float)
+  , slHdr :: (Bool, Float)
   , slRight :: [(Bool, Float)]
-  , slTitleW :: Float
   , slRightX :: Float
     -- ^ absolute window-local x of the right group's left edge
   }
@@ -452,18 +465,17 @@ data SectionLayout = SectionLayout
 -- the title while the analytically-placed XEmbed icons stood still.
 renderRow :: TrayEnv -> TrayTextures -> Config -> Theme
           -> Maybe KbUi -> Maybe BatteryEnv -> Ptr () -> Maybe BarSection
+          -> Maybe HdrTune
           -> [TrayItem] -> [XEmbedIcon] -> Float -> Float -> Float
           -> SectionLayout
           -> ImVec2 -> (Int, Int) -> (Int, Int) -> IO ()
-renderRow env textures config theme kbEnv mBat mainFont mBar items embeds iconSize btn
+renderRow env textures config theme kbEnv mBat mainFont mBar mHdr items embeds iconSize btn
           traySpacing sects surfSize winPos screenSize = do
-  let secFlag i = maybe False fst (atSec i)
-      atSec i =
-        let ps = slLeft sects
-        in if i < length ps then Just (ps !! i) else Nothing
-      wsOn = secFlag 0
-      titleOn = secFlag 1
-      winOn = secFlag 2
+  let wsOn = fst (slWs sects)
+      titleOn = fst (slTitle sects)
+      winOn = fst (slWin sects)
+      hdrOn = fst (slHdr sects)
+      titleBudget = snd (slTitle sects)
   wsRendered <-
     if wsOn then case mBar of
       Just (BarSection barT acts) -> do
@@ -479,7 +491,7 @@ renderRow env textures config theme kbEnv mBat mainFont mBar items embeds iconSi
           Nothing -> return False
           Just t -> do
             let capped = capTitleChars (configBarTitleMax config) t
-            fitted <- fitTitleWidth (slTitleW sects) capped
+            fitted <- fitTitleWidth titleBudget capped
             when wsRendered $ do
               sameLineS 0
               renderSep theme rowH
@@ -495,11 +507,22 @@ renderRow env textures config theme kbEnv mBat mainFont mBar items embeds iconSi
             return True
       Nothing -> return False
     else return False
-  _ <-
+  winRendered <-
     if winOn then case mBar of
       Just (BarSection barT acts) -> do
         _ <- renderWinButtons acts barT config theme rowH
           (wsRendered || titleRendered)
+        return True
+      Nothing -> return False
+    else return False
+  _ <-
+    if hdrOn then case mHdr of
+      Just ht -> do
+        when (wsRendered || titleRendered || winRendered) $ do
+          sameLineS 0
+          renderSep theme rowH
+          sameLineS 0
+        renderHdrTune ht traySpacing
         return True
       Nothing -> return False
     else return False

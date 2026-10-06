@@ -165,7 +165,12 @@ data Config = Config
     -- ^ taskbar: clickable windows of the current workspace
   , configBarTitleMax :: Int
     -- ^ active-window title widget cap, CHARACTERS (the widget also
-    -- shrinks to whatever space the spacer leaves before truncating)
+    --   shrinks to whatever space the spacer leaves before truncating)
+  , configBarHdrTune :: Bool
+    -- ^ live HDR ITM tuning widget (wlroots prototype): enable
+    --   checkbox + sdr/target nits sliders + bt2446a|boost mode
+    --   toggle; writes $XDG_RUNTIME_DIR/wlr-hdr-itm.conf which
+    --   wlroots re-reads every frame (Wayland session only)
   , configBarStruts :: Bool
     -- ^ set _NET_WM_STRUT_PARTIAL so avoidStruts reserves the bar's
     --   strip (layout mode)
@@ -342,6 +347,8 @@ instance FromJSON Config where
     <*> secondLevel o "bar" "windows" False
   -- configBarTitleMax
     <*> secondLevel o "bar" "window-title-max" 200
+  -- configBarHdrTune
+    <*> secondLevel o "bar" "hdr-tune" False
   -- configBarStruts
     <*> secondLevel o "bar" "struts" True
   -- configBarStrutGap

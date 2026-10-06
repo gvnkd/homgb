@@ -77,6 +77,59 @@
   can direct-scanout (bypasses renderer, true HDR); SDR never scans out
   on a PQ output so it always goes through the expanding texture path.
   Scene rects/background are NOT expanded (xmonad root is black anyway).
+- LUMA CURVE MODE (2026-10-06, third ITM mode): mode=2 "curve" —
+  luma-only expansion: full gain to knee=0.75 (75% of SDR white),
+  exponential shoulder after (cap=gain*0.98, slope-matched at the
+  knee), RGB scaled by the luma ratio — chroma/hue preserved like
+  boost, no hard clip, whites land ~90% of target (bt2446a-style
+  compression of the top end without its chroma damage). widget mode
+  button cycles boost -> curve -> bt2446a (htMode Int, conf
+  mode=curve). Session env still boost; the conf file wins once the
+  widget touched it.
+- HDR TUNE WIDGET (2026-10-06, homgb, uncommitted): live-tuning of the  ITM params from the bar. wlroots reads
+  $XDG_RUNTIME_DIR/wlr-hdr-itm.conf (key=value: enable, sdr_nits,
+  target_nits, mode=bt2446a|boost|curve) EVERY FRAME in build_state,
+  mtime-cached; a value CHANGE calls scene_output_damage_whole —
+  REQUIRED because the scene renders on damage only, a static screen
+  would never pick the new values up (looked like a dead slider).
+  homgb: Homgb.HdrTune (widget state + conf IO), config bar.hdr-tune
+  (default False), AppState.appHdrTune (Maybe; Nothing without
+  XDG_RUNTIME_DIR), plumbed renderTray -> renderTrayBar ->
+  measureSections/renderRow. Sliders use Raw.sliderFloat +
+  setNextItemWidth(90); widths are analytic in hdrTuneWidth (same
+  constants as render — pre-Begin measure). FILTERED-LIST INDEX BUG
+  (cost a round): SectionLayout's left sections were a filter'd list
+  and renderRow indexed it positionally — any absent section shifted
+  every later index (hdr-tune vanished with bar.windows off; windows
+  would have vanished whenever the title was empty). Sections are
+  NAMED slots ((Bool,Float) per section) now — never index a filtered
+  layout list. GHC 9.10 Prelude already exports foldl'; dear-imgui
+  re-exports Data.Text (T.pack) — both make imports "redundant".
+- GAMUT BURN FIX (2026-10-06, live-switched; C1 verify pending
+  Sergey's re-login): "colors burning, mostly lime-ish" on the
+  C1. Root cause: wlroots' texture pass normalizes EVERY surface to
+  sRGB primaries (pass.c render_pass_add_texture hardcodes
+  `wlr_color_primaries_transform_absolute_colorimetric(options->
+  primaries, &srgb, ...)`); the output PQ stage then applies identity
+  + PQ EOTF only. river-hdr tags the signal BT.2020 → TV decodes
+  sRGB coords as BT.2020 → oversaturation, green→lime most visible
+  (whites stay D65, text looked fine = red herring). Fix: sRGB→BT.2020
+  gamut matrix (0.6274/0.3293/0.0433 …) applied in the ITM branches
+  of texture.frag + output.frag — which also makes bt2446a correct
+  (its Y/Cb/Cr constants assume BT.2020 input). GLSL mat3 is
+  COLUMN-major. Validate shaders with `glslangValidator -S frag
+  --target-env vulkan1.2` (plain run errors on input_attachment_index;
+  nix store glslang-16.2.0-bin). Patch regen recipe: pristine src =
+  `nix build github:NixOS/nixpkgs/nixos-26.05#wlroots_0_20.src`
+  (a55fla...), git-init/commit, git apply old patch, edit, git diff >
+  patches/wlroots-itm.patch. Store -src trees are mode 555 →
+  chmod -R u+w before rm/cp. nixos-rebuild switch does NOT disturb
+  the running river session; new wlroots loads on re-login.
+  REMAINING GAP: PQ/BT.2020 surfaces (chromium HDR) still get
+  BT.2020→sRGB squeezed at texture and never widened back — pass-
+  through is hue-preserving-ish for in-gamut colors but clips wide
+  gamut; needs a BT.2020→sRGB→identity revisit if HDR video colors
+  look off.
 - FULLSCREEN (2026-10-05, fork 663a0b6, pushed, nix.config wqz44s):
   client fullscreen requests honored end to end. New ops OpFullscreen /
   OpExitFullscreen (Plan.hs) executed in the manage sequence (WM.hs):

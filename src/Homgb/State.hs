@@ -4,16 +4,18 @@ module Homgb.State where
 
 import qualified Data.Map.Strict as Map
 import Graphics.GL (GLuint)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO)
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Word (Word32)
 
 import Homgb.Backend (Backend)
 import Homgb.Bar (BarState, newBarState)
 import Homgb.Battery (BatteryEnv)
+import Homgb.Config (Config(..))
+import Homgb.HdrTune (HdrTune, newHdrTune)
 import Homgb.Keyboard (KbUi)
 import Homgb.Monitors (Monitor)
-import Homgb.Notifications.Daemon (NotifyState)
+import Homgb.Notifications.Daemon (NotifyState(..))
 import Homgb.Surface (Surfaces)
 import Homgb.Theme (Theme)
 import Homgb.Tray (TrayEnv)
@@ -45,6 +47,9 @@ data AppState = AppState
     -- ^ last HOMGB_PTRDEBUG probe timestamp (rate limiter)
   , appBar :: TVar BarState
     -- ^ cached EWMH desktop/workspace state (bar section)
+  , appHdrTune :: Maybe HdrTune
+    -- ^ live HDR ITM tuning widget state (bar.hdr-tune; Nothing on
+    -- X11 or without XDG_RUNTIME_DIR)
   , appBarDirty :: TVar Bool
     -- ^ set by the X event listener (startBarEvents): EWMH state
     -- changed; the frame loop re-reads it and clears the flag
@@ -76,6 +81,9 @@ initialAppState backend tState tray kb bat surfaces screenSize monitors theme ce
   bar <- newBarState
   barTick <- newTVarIO 0
   strut <- newTVarIO Nothing
+  state0 <- readTVarIO tState
+  hdrTune <- if configBarHdrTune (notiConfig state0) then newHdrTune
+    else return Nothing
   return AppState
     { appBackend = backend
     , appNotify = tState
@@ -90,6 +98,7 @@ initialAppState backend tState tray kb bat surfaces screenSize monitors theme ce
     , appPointer = pointer
     , appPointerProbe = pointerProbe
     , appBar = bar
+    , appHdrTune = hdrTune
     , appBarDirty = barDirty
     , appBarTick = barTick
     , appStrut = strut

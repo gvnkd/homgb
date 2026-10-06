@@ -18,6 +18,7 @@ library
                       , Homgb.Monitors
                      , Homgb.Bar
                      , Homgb.Battery
+                     , Homgb.HdrTune
                      , Homgb.Helpers
                       , Homgb.GL.Texture
                       , Homgb.WMProps
