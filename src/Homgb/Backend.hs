@@ -73,6 +73,11 @@ data Backend = Backend
   , bkPollPointer :: IO (Maybe (Int, Int))
     -- ^ pointer position in screen coordinates; Nothing when the
     -- platform cannot see the pointer outside its own surfaces
+  , bkSurfaceHover :: Surface -> Bool -> IO ()
+    -- ^ pointer entered (True) / left (False) a hover-focus surface
+    -- (the notification popups): X11 moves _NET_ACTIVE_WINDOW to the
+    -- surface on enter and back to the previously focused window on
+    -- leave; no-op on Wayland (the WM focus guard owns panel focus)
   , bkPressEdge :: TVar (Bool, Bool) -> IO (Bool, Int, Int)
     -- ^ (left-or-right button went down since the last call, pointer
     -- x, pointer y): the menu outside-click detector. X11 polls

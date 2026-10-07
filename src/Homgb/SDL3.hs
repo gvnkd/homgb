@@ -57,6 +57,8 @@ import SDL3.Sys.Events
   , pushEvent
   , registerEvents
   , pattern SDL_EVENT_QUIT
+  , pattern SDL_EVENT_WINDOW_MOUSE_ENTER
+  , pattern SDL_EVENT_WINDOW_MOUSE_LEAVE
   )
 import SDL3.Sys.Init (init, quit, pattern SDL_INIT_VIDEO)
 import SDL3.Sys.Properties
@@ -194,13 +196,16 @@ pumpEvents routes = alloca @SDL_Event $ \ev -> drain ev False
               drain ev sawQuit
 
 -- | Block up to the given number of milliseconds for events, then drain
--- the queue. Returns (sawQuit, sawAnyEvent): when the timeout elapses
--- with no events both are False and the caller can skip rendering
--- entirely (render-on-wake; the idle CPU stays blocked in SDL).
+-- the queue. Returns (sawQuit, sawAnyEvent, hoverEdges): when the timeout
+-- elapses with no events the first two are False and the caller can skip
+-- rendering entirely (render-on-wake; the idle CPU stays blocked in SDL).
 -- `userEv` is a registered SDL_EVENT_USER type used by other threads to
 -- wake the loop on state changes; it is counted as an event but not
--- routed to an ImGui context.
-pumpEventsTimeout :: Word32 -> [(Word32, Context)] -> Int -> IO (Bool, Bool)
+-- routed to an ImGui context. hoverEdges is the list of
+-- (windowID, entered) for WINDOW_MOUSE_ENTER/LEAVE events this drain —
+-- hover-focus surfaces (notification popups) act on it.
+pumpEventsTimeout :: Word32 -> [(Word32, Context)] -> Int
+                  -> IO (Bool, Bool, [(Word32, Bool)])
 pumpEventsTimeout userEv routes ms = alloca @SDL_Event $ \ev -> do
   -- the SAFE flavor: the unsafe FFI would freeze the capability for
   -- the whole wait and starve dbus-haskell's reply dispatch (SNI
@@ -208,29 +213,33 @@ pumpEventsTimeout userEv routes ms = alloca @SDL_Event $ \ev -> do
   -- serial-0 Error.Failed from the host library)
   got <- waitEventTimeoutSafe ev (i32 (max 0 (min ms maxBoundInt32)))
   if not got
-    then return (False, False)
-    else go ev False True
+    then return (False, False, [])
+    else go ev False True []
   where
     maxBoundInt32 = fromIntegral (maxBound :: Int32) :: Int
-    go ev sawQuit _sawAny = do
+    go ev sawQuit _sawAny hovers = do
       evType <- peek (castPtr ev :: Ptr SDL_EventType)
       if evType == SDL_EVENT_QUIT
-        then next ev True
+        then next ev True hovers
         else
           if evType /= SDL_EventType (fromIntegral userEv)
             then do
               wid <- peekByteOff ev 16
+              let edge | evType == SDL_EVENT_WINDOW_MOUSE_ENTER = [(wid, True)]
+                       | evType == SDL_EVENT_WINDOW_MOUSE_LEAVE = [(wid, False)]
+                       | otherwise = []
               case lookup (wid :: Word32) routes of
                 Just ctx -> do
                   Raw.setCurrentContext ctx
                   _ <- processEvent (castPtr ev)
                   return ()
                 Nothing -> return ()
-              next ev sawQuit
-            else next ev sawQuit
-    next ev sawQuit = do
+              next ev sawQuit (edge ++ hovers)
+            else next ev sawQuit hovers
+    next ev sawQuit hovers = do
       pending <- pollEvent ev
-      if pending then go ev sawQuit True else return (sawQuit, True)
+      if pending then go ev sawQuit True hovers
+                 else return (sawQuit, True, hovers)
 
 -- | Register one application event type (SDL_RegisterEvents) for
 -- cross-thread wakeups of the render loop.

@@ -4,7 +4,7 @@ module Homgb (run) where
 
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO)
 import Control.Exception (bracket_)
-import Control.Monad (forM, unless, void, when)
+import Control.Monad (forM, forM_, unless, void, when)
 import Control.Monad.IO.Class
 import Control.Monad.Managed
 import Data.Word (Word32)
@@ -29,7 +29,7 @@ import Homgb.Bar (barCovered)
 import Homgb.Battery (BatteryEnv(..), BatteryState(..), startBattery)
 import Homgb.Backend (bkFocusedAppId, bkHideSurface, bkMonitors, bkName
   , bkScreenSize, bkShowSurface, bkStartBarEvents, bkStartEmbedHost
-  , bkStartKeyboard, bkTagSurface)
+  , bkStartKeyboard, bkSurfaceHover, bkTagSurface)
 import Homgb.Backend.X11 (preferredBackend, selectBackend)
 import qualified Homgb.ImGui.SDL3 as ImGuiSdl3 (newFrame)
 import Homgb.Keyboard (KbUi(..), LayoutState(..))
@@ -184,8 +184,14 @@ mainLoop app = do
   deadline <- nextDeadline app
   now0 <- getPOSIXTime
   let waitMs = max 1 (ceiling ((deadline - now0) * 1000))
-  (shouldQuit, sawEvents) <- SDL3.pumpEventsTimeout (appUserEvent app)
+  (shouldQuit, sawEvents, hovers) <- SDL3.pumpEventsTimeout (appUserEvent app)
     (eventRoutes app) waitMs
+  -- hover-focus edges for the notification popups (X11: pointer enter
+  -- activates the popup surface, leave returns focus to the app)
+  let popSurf = surfacesPopups (appSurfaces app)
+  forM_ hovers $ \(wid, entered) ->
+    when (wid == sWindowId popSurf) $
+      bkSurfaceHover (appBackend app) popSurf entered
   debugEnv "mainloop: wake sawEvents=%s shouldQuit=%s"
     [show sawEvents, show shouldQuit]
   unless shouldQuit $ do

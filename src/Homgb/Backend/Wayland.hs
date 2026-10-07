@@ -79,6 +79,9 @@ waylandBackend wc = Backend
   , bkMoveSurface = moveSurface wc
   , bkPollPointer = sdlPointer
   , bkPressEdge = pressEdgeSDL
+  , bkSurfaceHover = \_ _ -> return ()
+    -- the WM's focus guard owns panel focus; hover-focus would need a
+    -- WM-side decision, not a client request
   , bkStartKeyboard = \_ _ -> return (Just (wmKbUi wc))
   , bkFocusedAppId = snd <$> readTVarIO (wcFocus wc)
   }

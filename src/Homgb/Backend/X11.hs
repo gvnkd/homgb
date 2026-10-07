@@ -15,11 +15,16 @@ module Homgb.Backend.X11
 -- backend imports no X11, so the dependency is one-way
 
 import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TVar (TVar, modifyTVar', readTVarIO, writeTVar)
+import Control.Concurrent.STM.TVar (TVar, modifyTVar', newTVarIO, readTVarIO, writeTVar)
 import Control.Monad (unless, when)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import Data.Word (Word64)
+import Foreign.C.Types (CLong(..))
+import Graphics.X11.Types (Window)
+import Graphics.X11.Xlib.Atom (internAtom)
 import Graphics.X11.Xlib.Display (defaultRootWindow)
+import Graphics.X11.Xlib.Extras (getWindowProperty32)
 import Graphics.X11.Xlib.Misc (queryPointer)
 import Graphics.X11.Xlib.Types (Display(..))
 import System.Directory (doesFileExist)
@@ -48,9 +53,10 @@ import Homgb.WMProps (setStrutPartial)
 import Homgb.Wayland.WmClient (startWmClient)
 
 -- | Build the X11 backend over an existing display connection (the
--- tray's).
-x11Backend :: Display -> Backend
-x11Backend dpy = Backend
+-- tray's). hoverRevert holds the window to return focus to when the
+-- pointer leaves a hover-focus surface (set at enter time).
+x11Backend :: Display -> TVar (Maybe Word64) -> Backend
+x11Backend dpy hoverRevert = Backend
   { bkName = "x11"
   , bkScreenSize = fromMaybe (1920, 1080) <$> Xcb.screenSize
   , bkMonitors = do
@@ -67,6 +73,7 @@ x11Backend dpy = Backend
   , bkMoveSurface = moveSurfaceWindow
   , bkPollPointer = pollPointer dpy
   , bkPressEdge = samplePressEdge (Just dpy)
+  , bkSurfaceHover = surfaceHover dpy hoverRevert
   , bkStartKeyboard = \cfg wake ->
       fmap (kbToUi dpy) <$> Keyboard.startKeyboard cfg wake
   , bkFocusedAppId = return ""
@@ -114,14 +121,18 @@ selectBackend mDpy barDirty wake kbPerApp = do
     Just "wayland" -> wayland
     Just other -> die ("homgb: unknown HOMGB_BACKEND " ++ other)
     Nothing -> case mDpy of
-      Just dpy -> return (x11Backend dpy)
+      Just dpy -> do
+        hoverRevert <- newTVarIO Nothing
+        return (x11Backend dpy hoverRevert)
       Nothing -> die
         "homgb: no X display (DISPLAY not set); set HOMGB_BACKEND=wayland"
   where
     wayland = waylandBackend <$> startWmClient barDirty wake kbPerApp
 
 requireX11 :: Maybe Display -> IO Backend
-requireX11 (Just dpy) = return (x11Backend dpy)
+requireX11 (Just dpy) = do
+  hoverRevert <- newTVarIO Nothing
+  return (x11Backend dpy hoverRevert)
 requireX11 Nothing = die "homgb: HOMGB_BACKEND=x11 but DISPLAY is not set"
 
 -- | XEmbed tray host: become the _NET_SYSTEM_TRAY_S0 owner so running
@@ -186,6 +197,43 @@ pollPointer :: Display -> IO (Maybe (Int, Int))
 pollPointer dpy = do
   (_, _, _, rx, ry, _, _, _) <- queryPointer dpy (defaultRootWindow dpy)
   return (Just (fromIntegral rx, fromIntegral ry))
+
+-- | EWMH _NET_ACTIVE_WINDOW client message (xmonad's ewmh hook honors
+-- it); the same cbits entry Bar.activate uses.
+foreign import ccall "homgb_set_active_window" c_set_active_window
+  :: Display -> Window -> CLong -> IO ()
+
+-- | Current _NET_ACTIVE_WINDOW xid (Nothing when none/unset).
+activeXid :: Display -> IO (Maybe Word64)
+activeXid dpy = do
+  a <- internAtom dpy "_NET_ACTIVE_WINDOW" False
+  m <- getWindowProperty32 dpy a (defaultRootWindow dpy)
+  return $ case m of
+    Just (v:_) | v /= 0 -> Just (fromIntegral v)
+    _ -> Nothing
+
+-- | Hover focus for the notification popups. Enter activates the
+-- surface and remembers who held focus; leave returns focus to that
+-- window — but only when the popup still holds it (the user may have
+-- switched windows mid-hover; yanking focus back would fight them).
+surfaceHover :: Display -> TVar (Maybe Word64) -> Surface -> Bool -> IO ()
+surfaceHover dpy revert surf entered = do
+  mId <- surfaceX11Id surf
+  forM_mId mId $ \wid -> do
+    let root = defaultRootWindow dpy
+    if entered
+      then do
+        cur <- activeXid dpy
+        atomically $ writeTVar revert
+          (if cur == Just wid then Nothing else cur)
+        c_set_active_window dpy root (fromIntegral wid)
+      else do
+        target <- readTVarIO revert
+        atomically $ writeTVar revert Nothing
+        cur <- activeXid dpy
+        forM_mId target $ \t ->
+          when (cur == Just wid) $
+            c_set_active_window dpy root (fromIntegral t)
 
 -- tiny local helper to keep the import list minimal
 forM_mId :: Maybe a -> (a -> IO ()) -> IO ()
