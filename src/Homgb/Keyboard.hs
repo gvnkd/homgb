@@ -67,8 +67,9 @@ data KeyboardEnv = KeyboardEnv
 -- | The UI-facing slice of the keyboard manager: what the tray
 -- indicator, the control interface and the per-app restore need.
 -- X11 projects 'KeyboardEnv' through 'kbToUi'; the Wayland backend
--- builds one fed by the WM's LayoutChanged signal over dbus (per-app
--- restore there is a no-op for now).
+-- builds one fed by the WM's LayoutChanged signal over dbus (its
+-- per-app restore is signal-driven in WmClient, not through this
+-- hook).
 data KbUi = KbUi
   { kbUiState :: TVar LayoutState
   , kbUiRotate :: IO ()
@@ -76,8 +77,8 @@ data KbUi = KbUi
   , kbUiPoll :: IO Bool
     -- ^ the 1s render-loop poll; True when the group changed
   , kbUiSyncFocus :: CLong -> IO Bool
-    -- ^ per-app layout restore for the focused window's xid (X11);
-    -- False when unsupported or nothing changed
+    -- ^ per-app layout restore for the focused window's xid (X11
+    -- only; False when unsupported or nothing changed)
   }
 
 kbToUi :: Display -> KeyboardEnv -> KbUi
@@ -90,12 +91,16 @@ kbToUi dpy kb = KbUi
 
 -- | Per-application layout memory (config keyboard.per-app, default on;
 -- KDE-style). @paFocus@ caches the last seen focused window and its
--- WM_CLASS so the render loop can diff cheaply; @paGroups@ maps a
+-- class so the render loop can diff cheaply; @paGroups@ maps a
 -- class name to the group the user last locked while a window of that
 -- class was focused. Apps without an entry keep whatever layout is
 -- current and get an entry on the first manual switch.
+--
+-- The focus key is text so both backends can share the record: X11
+-- stores the focused xid as text and diffs on it; Wayland stores the
+-- app_id (its WM_CLASS equivalent).
 data PerAppState = PerAppState
-  { paFocus :: TVar (CLong, T.Text)
+  { paFocus :: TVar (T.Text, T.Text)
   , paGroups :: TVar (Map T.Text Int)
   }
 
@@ -125,7 +130,7 @@ startKeyboard config wake = do
         , lsQueriedAt = now
         }
       pa <- if configKbPerApp config
-        then Just <$> (PerAppState <$> newTVarIO (0, "") <*> newTVarIO Map.empty)
+        then Just <$> (PerAppState <$> newTVarIO ("", "") <*> newTVarIO Map.empty)
         else return Nothing
       let kb = KeyboardEnv
             { kbState = tState
@@ -245,12 +250,13 @@ syncFocus :: KeyboardEnv -> Display -> CLong -> IO Bool
 syncFocus kb dpy xid = case kbPerApp kb of
   Nothing -> return False
   Just pa -> do
-    (oldXid, _) <- readTVarIO (paFocus pa)
-    if oldXid == xid
+    let key = T.pack (show xid)
+    (oldKey, _) <- readTVarIO (paFocus pa)
+    if oldKey == key
       then return False
       else do
         klass <- if xid > 0 then windowClass dpy (fromIntegral xid) else return ""
-        atomically $ writeTVar (paFocus pa) (xid, klass)
+        atomically $ writeTVar (paFocus pa) (key, klass)
         remembered <-
           if T.null klass
             then return Nothing

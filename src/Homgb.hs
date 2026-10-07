@@ -66,6 +66,7 @@ run = do
   tray <- startTray wake
   barDirty <- newTVarIO True
   backend <- selectBackend (trayDisplay tray) barDirty wake
+               (configKbPerApp config)
   hPutStrLn stderr $ "homgb: backend: " ++ bkName backend
   kb <- bkStartKeyboard backend config wake
   bat <- startBattery config

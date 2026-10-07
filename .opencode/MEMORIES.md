@@ -17,6 +17,73 @@
 
 # homgb
 
+## Wayland layout switching via CapsLock (2026-10-06, fork uncommitted)
+
+- NO RIVER PATCH NEEDED: river 0.4.5 already ships river-xkb-config-v1
+  with river_xkb_keyboard_v1.set_layout_by_index(int) + a layout event
+  (XkbKeyboard.zig:132; per-keyboard objects, group applied via
+  group.state.notifyModifiers). The 10-04 "small river patch" decision
+  dissolved into fork-side protocol work only.
+- FORK (xmonad-on-river): generated XMonad.River.Protocol.XkbConfig
+  (util/generate-protocol.hs; no stack on the node — run with
+  /nix/store/0299rhy...ghc-9.10.3-with-packages/bin/runghc, any
+  with-packages env containing xml-conduit; protocol/ is gitignored,
+  fetched on demand). WM.hs binds the global, tracks xkb_keyboard ids,
+  new Plan op OpSetLayoutGroup drained with the now-ops (input config,
+  no manage sequence) broadcasting set_layout_by_index to every
+  keyboard; late-plugged keyboards get the current group
+  (rtLayoutGroup). DBus default dcSetGroup is now emitNow .
+  OpSetLayoutGroup (was log-only); the layout event updates
+  rtLayoutGroup and fires riverLayoutHook (registered by dbusService)
+  only on CHANGE (one event per keyboard arrives) so the panel
+  indicator follows external switches without ping-pong.
+- DUPLICATE SIGNAL BUG + FIX: setGroup/externalGroupChange used to
+  writeChan SigLayout DIRECTLY; the 1s fallback emitter then diffed
+  against a stale snapshot baseline and re-emitted → every group
+  change produced two LayoutChanged. Fix: postAction conf (emitSignals
+  s) instead — emitSignals owns the diff baseline.
+- wlroots ORDERING FACT (why the Caps binding works): wlr_keyboard.c
+  emits events.key BEFORE xkb_state_update_key (notify_key: key
+  signal at :103, state update at :111), so river matches bindings
+  against PRE-press modifiers + base keysyms. With
+  XKB_DEFAULT_OPTIONS=caps:hyper a Caps press therefore matches a
+  (noModMask, xK_Hyper_L) river binding exactly like the X11
+  plain-press Hyper_L binding. Autorepeat cannot re-fire: river's
+  KeyboardGroup dedups repeat via a pressed-count map (repeat =
+  count++, no new handleKey). Do NOT bind the raw Caps_Lock keysym:
+  the lock bit sits in the modifier state at match time and
+  riverModifiers strips lock from binding masks → unmatchable.
+- ENV PLACEMENT GOTCHA (cost a wrong placement earlier):
+  XKB_DEFAULT_LAYOUT (SINGULAR — the 10-04 note saying LAYOUTS was
+  wrong; verified via strings on libxkbcommon.so) and
+  XKB_DEFAULT_OPTIONS must be exported in the SESSION WRAPPER before
+  `exec river` — river's own process env is what XkbConfig.init
+  reads (river -c init exports only reach river's CHILDREN, where
+  nothing reads them; /proc/<river>/environ had zero XKB_DEFAULT_*).
+- FLOW end to end: Caps -> river xkb-binding pressed -> xmonad spawn
+  busctl org.homgb.Control NextLayout -> homgb kbUiRotate =
+  wmNextLayout -> org.xmonad.WM NextLayout -> rotate -> dcSetGroup ->
+  OpSetLayoutGroup -> set_layout_by_index -> river layout event -> WM
+  dedup (rtLayoutGroup already = g, no hook) ; indicator fed by
+  LayoutChanged. homgb needed ZERO changes (Control.NextLayout ->
+  kbUiRotate already routed).
+- TESTS: tests/headless-dbus.sh gained SetLayoutGroup(1) ->
+  LayoutChanged group=1 + NextLayout -> last signal group=0
+  assertions (busctl monitor prints the INT32 4 lines below the
+  Member= line — grep -A2 misses it; duplicates caught by counting:
+  expect exactly 3 signals: initial 0, 1, 0). Headless river has no
+  keyboards so the xkb effect itself no-ops — the signal channel is
+  what the script proves; real group switching needs the live
+  session. 9/9 PASS.
+- STILL TODO for live: fork push + nix.config pin bump (module
+  currently pinned at df3f060) + nixos-rebuild + RE-LOGIN (river
+  keeps the old env/keymap until restarted). Node config
+  ~/.config/xmonad-river/xmonad.hs needed the Hyper_L binding added
+  by hand (module defaultConfig only copies if the file is absent;
+  the node copy predated it). nix.config modules/xmonad-river.nix:
+  session env moved out of riverInit; Hyper_L binding + dcLayouts
+  [us,ru] already in the module defaultConfig (uncommitted WIP).
+
 ## Volume OSD + PipeWire control (2026-10-06, uncommitted)
 
 - Native PipeWire client in cbits/homgb-pipewire.c + Homgb.PipeWire
@@ -304,11 +371,11 @@
   KEYBOARD REALITY on this stack: nixpkgs river-0.4.5 has NO
   riverctl (binary says "does not support riverctl" — the wm-protocol
   world has no compositor CLI) and river_window_management has NO
-  keymap/group request. So SetLayoutGroup's dcSetGroup has nothing to
-  call; real switching needs either XKB_DEFAULT_LAYOUTS/OPTIONS env
-  (native grp:alt_shift_toggle; WM can't see the group, indicator
-  goes blind) or a small river patch exposing the xkb group. Sergey
-  to decide.
+  keymap/group request. RESOLVED 2026-10-06 (see "Wayland layout
+  switching via CapsLock" above): the group request lives in the
+  SEPARATE river-xkb-config-v1 protocol (set_layout_by_index), the
+  fork speaks it, dcSetGroup defaults to it; no river patch, and
+  XKB_DEFAULT_LAYOUT is SINGULAR.
 - THE FLOAT BUG ROOT CAUSE (2026-10-04, homgb 43fc1f5): WmClient.send
   never set methodCallDestination — dbus messages WITHOUT a
   Destination header are NEVER DELIVERED by the bus, but busctl

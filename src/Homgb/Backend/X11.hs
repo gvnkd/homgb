@@ -104,9 +104,10 @@ preferredBackend = do
 -- Wayland session (XDG_SESSION_TYPE) picks the Wayland backend and
 -- anything with an X display falls back to X11. The Wayland backend
 -- needs the bar-dirty TVar (its WM client writes it from signal
--- handlers) and the wake action at construction time.
-selectBackend :: Maybe Display -> TVar Bool -> IO () -> IO Backend
-selectBackend mDpy barDirty wake = do
+-- handlers), the wake action, and the per-app keyboard flag
+-- (config keyboard.per-app) at construction time.
+selectBackend :: Maybe Display -> TVar Bool -> IO () -> Bool -> IO Backend
+selectBackend mDpy barDirty wake kbPerApp = do
   pref <- preferredBackend
   case pref of
     Just "x11" -> requireX11 mDpy
@@ -117,7 +118,7 @@ selectBackend mDpy barDirty wake = do
       Nothing -> die
         "homgb: no X display (DISPLAY not set); set HOMGB_BACKEND=wayland"
   where
-    wayland = waylandBackend <$> startWmClient barDirty wake
+    wayland = waylandBackend <$> startWmClient barDirty wake kbPerApp
 
 requireX11 :: Maybe Display -> IO Backend
 requireX11 (Just dpy) = return (x11Backend dpy)

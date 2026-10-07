@@ -25,9 +25,9 @@ module Homgb.Wayland.WmClient
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar
-  (TVar, modifyTVar', newTVarIO, readTVar, writeTVar)
+  (TVar, modifyTVar', newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeException, try)
-import Control.Monad (void)
+import Control.Monad (unless, void, when)
 import Data.Int (Int32)
 import Data.Maybe (listToMaybe)
 import Data.Map.Strict (Map)
@@ -46,7 +46,7 @@ import DBus.Client
   (Client, addMatch, callNoReply, connectSession, matchAny, matchInterface)
 import DBus.Internal.Types (MemberName)
 
-import Homgb.Keyboard (KbUi(..), LayoutState(..))
+import Homgb.Keyboard (KbUi(..), LayoutState(..), PerAppState(..))
 
 data WmClient = WmClient
   { wcClient :: Client
@@ -60,14 +60,20 @@ data WmClient = WmClient
     -- ^ window identifier -> pseudo xid, assigned in first-seen
     -- order so the taskbar can key clicks the BarState way
   , wcNextId :: TVar Word64
+  , wcPerApp :: Maybe PerAppState
+    -- ^ per-app layout memory (config keyboard.per-app); fed by the
+    -- FocusChanged/LayoutChanged handlers, keyed by app_id
+  , wcDebug :: Maybe String
   }
 
 -- | Connect and subscribe. `dirty` is the bar upkeep gate (set on
 -- every signal; the upkeep diff suppresses no-change renders) and
 -- `wake` re-renders. The initial WorkspacesChanged burst the WM
--- emits during startup lands here without any polling.
-startWmClient :: TVar Bool -> IO () -> IO WmClient
-startWmClient dirty wake = do
+-- emits during startup lands here without any polling. `perApp`
+-- enables the per-application layout memory (config
+-- keyboard.per-app).
+startWmClient :: TVar Bool -> IO () -> Bool -> IO WmClient
+startWmClient dirty wake perApp = do
   client <- connectSession
   ws <- newTVarIO []
   wins <- newTVarIO []
@@ -76,12 +82,15 @@ startWmClient dirty wake = do
   layout <- newTVarIO (LayoutState [] 0 now)
   ids <- newTVarIO Map.empty
   nextId <- newTVarIO 1
-  let wc = WmClient client wake ws wins foc layout ids nextId
+  pa <- if perApp
+    then Just <$> (PerAppState <$> newTVarIO ("", "") <*> newTVarIO Map.empty)
+    else return Nothing
   dbg <- lookupEnv "HOMGB_DEBUG"
+  let wc = WmClient client wake ws wins foc layout ids nextId pa dbg
   subResult <- try
     (addMatch client matchAny { matchInterface = Just "org.xmonad.WM" }
        (\sig -> do
-          r <- try (handleSignal dbg dirty wake ws wins foc layout sig)
+          r <- try (handleSignal wc dirty sig)
             :: IO (Either SomeException ())
           case r of
             Left e -> hPutStrLn stderr
@@ -93,44 +102,97 @@ startWmClient dirty wake = do
     Right _ -> hPutStrLn stderr "homgb: wm: subscribed to org.xmonad.WM"
   return wc
 
-handleSignal :: Maybe String -> TVar Bool -> IO ()
-             -> TVar [(T.Text, Bool, Bool)]
-             -> TVar [(T.Text, T.Text, T.Text, T.Text, Bool)]
-             -> TVar (T.Text, T.Text) -> TVar LayoutState
-             -> Signal -> IO ()
-handleSignal dbg dirty wake ws wins foc layout sig = do
+handleSignal :: WmClient -> TVar Bool -> Signal -> IO ()
+handleSignal wc dirty sig = do
   let body = signalBody sig
-  case dbg of
+  case wcDebug wc of
     Just _ -> hPutStrLn stderr
       ("homgb: wm: signal " ++ show (signalMember sig))
     Nothing -> return ()
   case signalMember sig of
       "WorkspacesChanged" -> case listToMaybe body of
-        Just v | Just x <- fromVariant v -> atomically (writeTVar ws x) >> markDirty
+        Just v | Just x <- fromVariant v ->
+          atomically (writeTVar (wcWorkspaces wc) x) >> markDirty
         _ -> parseWarn "WorkspacesChanged" body
       "WindowsChanged" -> case listToMaybe body of
-        Just v | Just x <- fromVariant v -> atomically (writeTVar wins x) >> markDirty
+        Just v | Just x <- fromVariant v ->
+          atomically (writeTVar (wcWindows wc) x) >> markDirty
         _ -> parseWarn "WindowsChanged" body
       "FocusChanged" -> case listToMaybe body of
-        Just v | Just x <- fromVariant v -> atomically (writeTVar foc x) >> markDirty
+        Just v | Just (t, a) <- fromVariant v -> do
+          atomically $ writeTVar (wcFocus wc) (t, a)
+          syncFocusApp wc a
+          markDirty
         _ -> parseWarn "FocusChanged" body
       "LayoutChanged" -> case listToMaybe body of
         Just v | Just (g, names) <- fromVariant v -> do
-          t <- getCurrentTime
-          atomically $ writeTVar layout LayoutState
+          now <- getCurrentTime
+          let g' = fromIntegral (g :: Int32)
+          atomically $ writeTVar (wcLayout wc) LayoutState
             { lsLayouts = map T.pack names
-            , lsGroup = fromIntegral (g :: Int32)
-            , lsQueriedAt = t
+            , lsGroup = g'
+            , lsQueriedAt = now
             }
+          recordAppGroup wc g'
           markDirty
         _ -> parseWarn "LayoutChanged" body
       _ -> return ()
   where
-    markDirty = atomically (writeTVar dirty True) >> wake
+    markDirty = atomically (writeTVar dirty True) >> wcWake wc
     parseWarn name body = hPutStrLn stderr
       ("homgb: wm: failed to parse " ++ name ++ ": "
         ++ show (map variantTypeName body))
     variantTypeName = show . variantType
+
+-- | Per-app layout restore, KDE-style (config keyboard.per-app — the
+-- X11 feature, ported to this backend's signals): focus changes
+-- arrive as FocusChanged(title, app_id), and app_id is this backend's
+-- WM_CLASS. When the focused app changes and a group was remembered
+-- for it, re-apply the group through the WM.
+--
+-- Panel and classless focus is IGNORED ENTIRELY, not cached as an
+-- empty key: clicking the bar focuses a homgb surface for the moment
+-- the WM's focus guard needs to restore the real focus, and a rotate
+-- issued by that click would otherwise (a) be recorded against no
+-- app, and (b) be reverted by the restore when the app's
+-- FocusChanged lands — the user's switch visibly undone. X11 never
+-- sees this because its DOCK surfaces never take keyboard focus. The
+-- cost: a rotate on an empty desktop updates the last app's entry
+-- instead of nothing — harmless, arguably the intent.
+syncFocusApp :: WmClient -> T.Text -> IO ()
+syncFocusApp wc appId = mapM_ go (wcPerApp wc)
+  where
+    go pa = do
+      let key = if T.null appId || appId == "homgb" then "" else appId
+      unless (T.null key) $ do
+        (oldKey, _) <- readTVarIO (paFocus pa)
+        when (oldKey /= key) $ do
+          atomically $ writeTVar (paFocus pa) (key, key)
+          remembered <- Map.lookup key <$> readTVarIO (paGroups pa)
+          case remembered of
+            Nothing -> return ()
+            Just g -> do
+              cur <- lsGroup <$> readTVarIO (wcLayout wc)
+              when (g /= cur) $ do
+                wmDebug wc ("wm: per-app " ++ T.unpack key ++ " -> group " ++ show g)
+                wmSetLayoutGroup wc g
+
+-- | Every group change feeds the per-app memory — the counterpart of
+-- the X11 state-notify listener's recordForFocused, keeping KDE
+-- parity: whatever caused the switch (Caps rotation, a restore, an
+-- external SetLayoutGroup), the focused app's entry follows it.
+recordAppGroup :: WmClient -> Int -> IO ()
+recordAppGroup wc g = mapM_ go (wcPerApp wc)
+  where
+    go pa = do
+      (_, klass) <- readTVarIO (paFocus pa)
+      unless (T.null klass) $
+        atomically $ modifyTVar' (paGroups pa) (Map.insert klass g)
+
+wmDebug :: WmClient -> String -> IO ()
+wmDebug wc msg = case wcDebug wc of
+  Just _ -> hPutStrLn stderr msg
+  Nothing -> return ()
 
 -- | Assign pseudo xids to any not-yet-seen identifiers; returns the
 -- resolved pairs. Called from the bar upkeep (single-threaded there).
@@ -182,7 +244,8 @@ send wc member args =
 
 -- | The keyboard indicator's data source: LayoutChanged feeds the
 -- state TVar; rotate goes to the WM; the 1s poll is a no-op (signals
--- already wake the loop).
+-- already wake the loop); per-app restore is signal-driven
+-- (syncFocusApp on FocusChanged), not this render-loop hook.
 wmKbUi :: WmClient -> KbUi
 wmKbUi wc = KbUi
   { kbUiState = wcLayout wc
